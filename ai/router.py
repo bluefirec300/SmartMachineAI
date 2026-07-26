@@ -1,8 +1,12 @@
 import re
+
+from ai.equipment_knowledge import EquipmentKnowledge
+
 from typing import Any
 
 from plc.tag_registry import TagRegistry
 
+equipment_knowledge = EquipmentKnowledge()
 
 FACTORY_WIDE_WORDS = {
     "factory",
@@ -189,28 +193,23 @@ def detect_intent(question: str) -> str:
 def detect_equipment(question: str) -> str:
     text = normalize_text(question)
 
-    if any(contains_phrase(text, word) for word in FACTORY_WIDE_WORDS):
+    if any(
+        contains_phrase(text, word)
+        for word in FACTORY_WIDE_WORDS
+    ):
         return "factory"
 
-    # Check more specific phrases before shorter ones.
-    equipment_order = [
-        "cold_room",
-        "compressor",
-        "chiller",
-        "pump",
-        "tank",
-        "energy",
-        "water",
-        "air",
-    ]
+    knowledge_match = equipment_knowledge.find_equipment(
+        question
+    )
 
-    for equipment in equipment_order:
-        aliases = EQUIPMENT_ALIASES[equipment]
-
-        if any(contains_phrase(text, alias) for alias in aliases):
-            return equipment
+    if knowledge_match:
+        return knowledge_match
 
     return "factory"
+
+
+
 
 
 def detect_measurements(question: str) -> set[str]:
@@ -284,27 +283,53 @@ def select_tags(
     intent: str,
 ) -> list[str] | None:
     registered_tags = get_enabled_tags()
+    registered_names = {
+        tag["name"]
+        for tag in registered_tags
+    }
+
     measurements = detect_measurements(question)
 
-    equipment_tags = [
-        tag
-        for tag in registered_tags
-        if tag_matches_equipment(tag, equipment)
-    ]
+    # For a named equipment system, use the engineering
+    # relationships from equipment_knowledge.json.
+    if equipment != "factory":
+        knowledge_tags = equipment_knowledge.get_tags(
+            equipment_name=equipment,
+            include_related=True,
+        )
 
-    # Narrow the result when the question names a measurement.
-    if measurements:
-        matched_tags = [
-            tag
-            for tag in equipment_tags
-            if tag_matches_measurements(tag, measurements)
+        knowledge_tags = [
+            tag_name
+            for tag_name in knowledge_tags
+            if tag_name in registered_names
         ]
 
-        if matched_tags:
-            return [tag["name"] for tag in matched_tags]
+        # A specific measurement question should return only
+        # matching tags from the equipment knowledge group.
+        if measurements:
+            tags_by_name = {
+                tag["name"]: tag
+                for tag in registered_tags
+            }
 
-    # Factory-wide status questions should focus on condition tags.
-    if equipment == "factory" and intent == "status":
+            matched_tags = [
+                tag_name
+                for tag_name in knowledge_tags
+                if tag_matches_measurements(
+                    tags_by_name[tag_name],
+                    measurements,
+                )
+            ]
+
+            if matched_tags:
+                return matched_tags
+
+        # Broad questions such as "How is the compressor?"
+        # receive the full engineering context.
+        return knowledge_tags
+
+    # Factory-wide status questions focus on state and alarm tags.
+    if intent == "status":
         status_measurements = {
             "alarm",
             "warning",
@@ -322,13 +347,19 @@ def select_tags(
         ]
 
         if status_tags:
-            return [tag["name"] for tag in status_tags]
+            return [
+                tag["name"]
+                for tag in status_tags
+            ]
 
-    # Returning None tells database_reader to include all database tags.
-    if equipment == "factory":
-        return None
+    # None tells the database reader to retrieve all tags.
+    return None
 
-    return [tag["name"] for tag in equipment_tags]
+
+
+
+
+
 
 
 def route_question(question: str) -> dict[str, Any]:

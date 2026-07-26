@@ -1,0 +1,142 @@
+{
+  "compressor": {
+    "display_name": "Air Compressor System",
+    "description": "Compressed-air generation and delivery system.",
+    "aliases": [
+      "compressor",
+      "air compressor",
+      "compressed air"
+    ],
+    "main_tags": [
+      "CompressorPressure"
+    ],
+    "related_tags": [
+      "CompressorTemperature",
+      "CompressorCurrent",
+      "CompressorRunning",
+      "CompressorWarning",
+      "CompressorAlarm",
+      "AirPressure"
+    ]
+  },
+
+  "chiller": {
+    "display_name": "Chiller System",
+    "description": "Cooling-water supply and return system.",
+    "aliases": [
+      "chiller",
+      "cooling water"
+    ],
+    "main_tags": [
+      "ChillerSupplyTemp",
+      "ChillerReturnTemp"
+    ],
+    "related_tags": [
+      "ChillerRunning",
+      "ChillerAlarm"
+    ]
+  },
+
+  "cold_room": {
+    "display_name": "Cold Room",
+    "description": "Cold-room temperature, humidity, door and alarm monitoring.",
+    "aliases": [
+      "cold room",
+      "coldroom",
+      "cold storage"
+    ],
+    "main_tags": [
+      "ColdRoomTemperature"
+    ],
+    "related_tags": [
+      "ColdRoomHumidity",
+      "ColdRoomDoor",
+      "ColdRoomAlarm"
+    ]
+  },
+
+  "tank": {
+    "display_name": "Storage and Transfer System",
+    "description": "Tank level and transfer-pump monitoring.",
+    "aliases": [
+      "tank",
+      "storage tank",
+      "transfer system"
+    ],
+    "main_tags": [
+      "TankLevel"
+    ],
+    "related_tags": [
+      "TransferPumpRunning",
+      "TransferPumpCurrent",
+      "TankLowAlarm"
+    ]
+  },
+
+  "pump": {
+    "display_name": "Transfer Pump",
+    "description": "Transfer-pump operation and current monitoring.",
+    "aliases": [
+      "pump",
+      "transfer pump"
+    ],
+    "main_tags": [
+      "TransferPumpRunning",
+      "TransferPumpCurrent"
+    ],
+    "related_tags": [
+      "TankLevel",
+      "TankLowAlarm"
+    ]
+  },
+
+  "energy": {
+    "display_name": "Factory Energy",
+    "description": "Factory electrical load monitoring.",
+    "aliases": [
+      "energy",
+      "power",
+      "electrical load",
+      "kilowatt",
+      "kw"
+    ],
+    "main_tags": [
+      "FactoryEnergyKW"
+    ],
+    "related_tags": []
+  },
+
+  "water": {
+    "display_name": "Factory Water Supply",
+    "description": "Factory water-pressure monitoring.",
+    "aliases": [
+      "water",
+      "water pressure"
+    ],
+    "main_tags": [
+      "WaterPressure"
+    ],
+    "related_tags": []
+  },
+
+  "air": {
+    "display_name": "Factory Compressed Air",
+    "description": "Factory compressed-air pressure and compressor condition.",
+    "aliases": [
+      "air pressure",
+      "compressed air",
+      "factory air"
+    ],
+    "main_tags": [
+      "AirPressure"
+    ],
+    "related_tags": [
+      "CompressorPressure",
+      "CompressorTemperature",
+      "CompressorCurrent",
+      "CompressorRunning",
+      "CompressorWarning",
+      "CompressorAlarm"
+    ]
+  }
+}
