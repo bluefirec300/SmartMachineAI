@@ -19,8 +19,8 @@ FACTORY_WIDE_WORDS = {
     "plant status",
 }
 
-
 TREND_WORDS = {
+    # Existing
     "trend",
     "rising",
     "falling",
@@ -33,7 +33,33 @@ TREND_WORDS = {
     "getting worse",
     "getting better",
     "over time",
+
+    # Additional natural language
+    "increase",
+    "decrease",
+    "increased",
+    "decreased",
+    "rise",
+    "fall",
+    "dropped",
+    "dropping",
+    "drop",
+    "climbing",
+    "climb",
+    "declining",
+    "decline",
+    "improving",
+    "improve",
+    "changed",
+    "change",
+    "changing",
+    "stable",
+    "stabilised",
+    "stabilized",
+    "fluctuating",
+    "fluctuation",
 }
+
 
 
 STATUS_WORDS = {
