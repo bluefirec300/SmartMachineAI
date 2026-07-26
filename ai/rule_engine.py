@@ -3,35 +3,148 @@ from pathlib import Path
 from typing import Any
 
 from ai.trend_analyzer import format_number
+from config.configuration_manager import ConfigurationManager
+from config.configuration_service import get_configuration
 from plc.tag_registry import TagRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RULES_PATH = PROJECT_ROOT / "config" / "engineering_rules.json"
+
+DEFAULT_RULES_PATH = (
+    PROJECT_ROOT
+    / "config"
+    / "engineering_rules.json"
+)
+
+DEFAULT_DATABASE_PATH = (
+    PROJECT_ROOT
+    / "database"
+    / "config.db"
+)
 
 
 class RuleEngine:
+    """
+    Evaluates tag summaries against engineering thresholds.
+
+    Primary source:
+        database/config.db
+
+    Temporary fallback:
+        config/engineering_rules.json
+    """
+
     def __init__(
         self,
         rules_path: Path | str = DEFAULT_RULES_PATH,
+        database_path: Path | str = DEFAULT_DATABASE_PATH,
+        allow_json_fallback: bool = True,
     ):
         self.rules_path = Path(rules_path).resolve()
+        self.database_path = Path(database_path).resolve()
+        self.allow_json_fallback = allow_json_fallback
+
+        self.source = ""
         self.rules = self._load_rules()
 
-        registry = TagRegistry()
+        registry = TagRegistry(
+            database_path=self.database_path,
+            allow_json_fallback=allow_json_fallback,
+        )
 
         self.tag_metadata = {
             tag["name"]: tag
             for tag in registry.get_all()
         }
 
-    def _load_rules(self) -> dict[str, dict[str, float]]:
-        if not self.rules_path.exists():
+    def _load_rules(
+        self,
+    ) -> dict[str, dict[str, float]]:
+        database_error: Exception | None = None
+
+        try:
+            rules = self._load_from_database()
+
+            if rules:
+                self.source = "database"
+                return rules
+
+        except Exception as error:
+            database_error = error
+
+        if self.allow_json_fallback:
+            rules = self._load_from_json()
+            self.source = "json"
+            return rules
+
+        if database_error is not None:
+            raise RuntimeError(
+                "Unable to load engineering thresholds "
+                "from configuration database."
+            ) from database_error
+
+        raise RuntimeError(
+            "Configuration database contains no engineering "
+            "thresholds and JSON fallback is disabled."
+        )
+
+    def _load_from_database(
+        self,
+    ) -> dict[str, dict[str, float]]:
+        if not self.database_path.exists():
             raise FileNotFoundError(
-                f"Engineering rules file not found: {self.rules_path}"
+                f"Configuration database not found: "
+                f"{self.database_path}"
             )
 
-        with self.rules_path.open("r", encoding="utf-8") as file:
+        default_database_path = DEFAULT_DATABASE_PATH.resolve()
+
+        if self.database_path == default_database_path:
+            config = get_configuration()
+        else:
+            config = ConfigurationManager(
+                database_path=self.database_path
+            )
+
+        threshold_rows = config.get_thresholds()
+
+        rules: dict[str, dict[str, float]] = {}
+
+        threshold_names = (
+            "low_warning",
+            "low_alarm",
+            "high_warning",
+            "high_alarm",
+        )
+
+        for row in threshold_rows:
+            tag_name = str(row["tag_name"])
+            tag_rules: dict[str, float] = {}
+
+            for threshold_name in threshold_names:
+                value = row.get(threshold_name)
+
+                if value is not None:
+                    tag_rules[threshold_name] = float(value)
+
+            if tag_rules:
+                rules[tag_name] = tag_rules
+
+        return rules
+
+    def _load_from_json(
+        self,
+    ) -> dict[str, dict[str, float]]:
+        if not self.rules_path.exists():
+            raise FileNotFoundError(
+                f"Engineering rules file not found: "
+                f"{self.rules_path}"
+            )
+
+        with self.rules_path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
             data = json.load(file)
 
         if not isinstance(data, dict):
@@ -41,9 +154,18 @@ class RuleEngine:
 
         return data
 
+    def reload(self) -> None:
+        self.rules = self._load_rules()
+
+    def get_source(self) -> str:
+        return self.source
+
     def _unit(self, tag_name: str) -> str:
         metadata = self.tag_metadata.get(tag_name, {})
-        return str(metadata.get("unit", "")).strip()
+
+        return str(
+            metadata.get("unit", "")
+        ).strip()
 
     @staticmethod
     def _value_text(
@@ -51,6 +173,7 @@ class RuleEngine:
         unit: str,
     ) -> str:
         formatted = format_number(value)
+
         return f"{formatted} {unit}".strip()
 
     def evaluate_summary(
@@ -72,18 +195,22 @@ class RuleEngine:
         if not rules or current is None:
             result["condition"] = "not_evaluated"
             result["message"] = (
-                f"No engineering threshold is configured for {tag_name}."
+                f"No engineering threshold is configured "
+                f"for {tag_name}."
             )
+
             return result
 
         try:
             value = float(current)
+
         except (TypeError, ValueError):
             result["condition"] = "invalid_value"
             result["message"] = (
-                f"{tag_name} cannot be evaluated because its value "
-                f"is not numeric."
+                f"{tag_name} cannot be evaluated because "
+                f"its value is not numeric."
             )
+
             return result
 
         unit = self._unit(tag_name)
@@ -94,56 +221,70 @@ class RuleEngine:
         high_warning = rules.get("high_warning")
         high_alarm = rules.get("high_alarm")
 
-        if low_alarm is not None and value <= low_alarm:
+        if (
+            low_alarm is not None
+            and value <= low_alarm
+        ):
             result.update(
                 {
                     "severity": "alarm",
                     "condition": "low_alarm",
                     "message": (
-                        f"{tag_name} is critically low at {value_text}."
+                        f"{tag_name} is critically low "
+                        f"at {value_text}."
                     ),
                 }
             )
 
-        elif high_alarm is not None and value >= high_alarm:
+        elif (
+            high_alarm is not None
+            and value >= high_alarm
+        ):
             result.update(
                 {
                     "severity": "alarm",
                     "condition": "high_alarm",
                     "message": (
-                        f"{tag_name} is critically high at {value_text}."
+                        f"{tag_name} is critically high "
+                        f"at {value_text}."
                     ),
                 }
             )
 
-        elif low_warning is not None and value <= low_warning:
+        elif (
+            low_warning is not None
+            and value <= low_warning
+        ):
             result.update(
                 {
                     "severity": "warning",
                     "condition": "low_warning",
                     "message": (
-                        f"{tag_name} is below its normal range "
-                        f"at {value_text}."
+                        f"{tag_name} is below its normal "
+                        f"range at {value_text}."
                     ),
                 }
             )
 
-        elif high_warning is not None and value >= high_warning:
+        elif (
+            high_warning is not None
+            and value >= high_warning
+        ):
             result.update(
                 {
                     "severity": "warning",
                     "condition": "high_warning",
                     "message": (
-                        f"{tag_name} is above its normal range "
-                        f"at {value_text}."
+                        f"{tag_name} is above its normal "
+                        f"range at {value_text}."
                     ),
                 }
             )
 
         else:
             result["message"] = (
-                f"{tag_name} is within its configured operating limits "
-                f"at {value_text}."
+                f"{tag_name} is within its configured "
+                f"operating limits at {value_text}."
             )
 
         return result
@@ -167,7 +308,10 @@ def format_rule_results(
     for result in results:
         if (
             include_normal
-            or result["severity"] in {"warning", "alarm"}
+            or result["severity"] in {
+                "warning",
+                "alarm",
+            }
         ):
             selected.append(
                 f"- [{result['severity'].upper()}] "
@@ -175,6 +319,9 @@ def format_rule_results(
             )
 
     if not selected:
-        return "- No configured engineering limits are currently exceeded."
+        return (
+            "- No configured engineering limits "
+            "are currently exceeded."
+        )
 
     return "\n".join(selected)
