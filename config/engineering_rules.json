@@ -1,0 +1,58 @@
+{
+  "CompressorPressure": {
+    "low_warning": 5.5,
+    "low_alarm": 4.5,
+    "high_warning": 8.0,
+    "high_alarm": 9.0
+  },
+  "CompressorTemperature": {
+    "high_warning": 80.0,
+    "high_alarm": 95.0
+  },
+  "CompressorCurrent": {
+    "high_warning": 24.0,
+    "high_alarm": 30.0
+  },
+  "ChillerSupplyTemp": {
+    "high_warning": 12.0,
+    "high_alarm": 16.0
+  },
+  "ChillerReturnTemp": {
+    "high_warning": 18.0,
+    "high_alarm": 24.0
+  },
+  "ColdRoomTemperature": {
+    "high_warning": 8.0,
+    "high_alarm": 12.0
+  },
+  "ColdRoomHumidity": {
+    "high_warning": 80.0,
+    "high_alarm": 90.0
+  },
+  "TankLevel": {
+    "low_warning": 20.0,
+    "low_alarm": 10.0,
+    "high_warning": 90.0,
+    "high_alarm": 98.0
+  },
+  "TransferPumpCurrent": {
+    "high_warning": 12.0,
+    "high_alarm": 16.0
+  },
+  "FactoryEnergyKW": {
+    "high_warning": 450.0,
+    "high_alarm": 550.0
+  },
+  "WaterPressure": {
+    "low_warning": 2.0,
+    "low_alarm": 1.0,
+    "high_warning": 6.0,
+    "high_alarm": 8.0
+  },
+  "AirPressure": {
+    "low_warning": 5.5,
+    "low_alarm": 4.5,
+    "high_warning": 8.0,
+    "high_alarm": 9.0
+  }
+}

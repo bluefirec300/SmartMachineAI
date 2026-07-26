@@ -2,6 +2,7 @@ import sqlite3
 
 import requests
 
+from ai.rule_engine import RuleEngine, format_rule_results
 from ai.ai_provider import AIProvider
 from ai.database_reader import DB_PATH, get_machine_history
 from ai.router import route_question
@@ -17,6 +18,8 @@ from ai.prompt_builder import build_prompt
 def main():
 
     observation_engine = ObservationEngine()
+    rule_engine = RuleEngine()
+
     print("MMG Smart Machine AI")
     print(f"Database: {DB_PATH}")
     print("Question routing: enabled")
@@ -60,6 +63,13 @@ def main():
 
             summaries = analyse_history(history)
 
+            rule_results = rule_engine.evaluate(summaries)
+
+            rule_context = format_rule_results(
+                rule_results,
+                include_normal=False,
+            )
+
             observations = observation_engine.build(
                 summaries=summaries,
                 intent=route["intent"],
@@ -69,11 +79,10 @@ def main():
                 observations
             )
 
-
-
             prompt = build_prompt(
                 question=question,
                 machine_context=context,
+                rule_context=rule_context,
                 route=route,
             )
 

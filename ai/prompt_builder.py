@@ -47,7 +47,12 @@ def format_machine_context(summaries, intent):
     return "\n\n".join(sections)
 
 
-def build_prompt(question, machine_context, route):
+def build_prompt(
+    question,
+    machine_context,
+    rule_context,
+    route,
+):
     return f"""
 You are an industrial machine assistant.
 
@@ -73,6 +78,9 @@ For a status or trend question, consider all supplied related tags.
 Do not repeat the same operating state more than once.
 Do not repeat an observation using different wording.
 
+Engineering limit evaluation:
+{rule_context}
+
 Confirmed engineering observations:
 {machine_context}
 
@@ -80,6 +88,8 @@ Operator question:
 {question}
 
 Give a clear and concise answer.
+Treat engineering warnings and alarms as deterministic results.
+Do not contradict the supplied engineering limit evaluation.
 """.strip()
 
 
