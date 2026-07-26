@@ -3,10 +3,12 @@
     "display_name": "Air Compressor System",
     "description": "Compressed-air generation and delivery system.",
     "aliases": [
-      "compressor",
-      "air compressor",
-      "compressed air"
-    ],
+  "compressor",
+  "air compressor",
+  "compressed air",
+  "compressed air system",
+  "air system"
+],
     "main_tags": [
       "CompressorPressure"
     ],
@@ -24,9 +26,12 @@
     "display_name": "Chiller System",
     "description": "Cooling-water supply and return system.",
     "aliases": [
-      "chiller",
-      "cooling water"
-    ],
+  "chiller",
+  "cooling water",
+  "cooling system",
+  "chilled water",
+  "chilled water system"
+],
     "main_tags": [
       "ChillerSupplyTemp",
       "ChillerReturnTemp"
@@ -41,10 +46,12 @@
     "display_name": "Cold Room",
     "description": "Cold-room temperature, humidity, door and alarm monitoring.",
     "aliases": [
-      "cold room",
-      "coldroom",
-      "cold storage"
-    ],
+  "cold room",
+  "coldroom",
+  "cold storage",
+  "cold storage area",
+  "refrigerated room"
+],
     "main_tags": [
       "ColdRoomTemperature"
     ],
