@@ -1,7 +1,7 @@
 import os
 
-from ollama_client import stream_ollama
-from openai_client import OpenAIClient
+from ai.ollama_client import stream_ollama
+from ai.openai_client import OpenAIClient
 
 
 class AIProvider:

@@ -1,4 +1,4 @@
-from trend_analyzer import format_number
+from ai.trend_analyzer import format_number
 
 
 def format_machine_context(summaries, intent):

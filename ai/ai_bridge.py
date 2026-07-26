@@ -2,11 +2,11 @@ import sqlite3
 
 import requests
 
-from ai_provider import AIProvider
-from database_reader import DB_PATH, get_machine_history
-from prompt_builder import build_prompt, format_machine_context
-from router import route_question
-from trend_analyzer import analyse_history
+from ai.ai_provider import AIProvider
+from ai.database_reader import DB_PATH, get_machine_history
+from ai.prompt_builder import build_prompt, format_machine_context
+from ai.router import route_question
+from ai.trend_analyzer import analyse_history
 
 
 def main():

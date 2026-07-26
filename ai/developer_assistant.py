@@ -1,5 +1,5 @@
-from ai_provider import AIProvider
-from project_context import build_project_context
+from ai.ai_provider import AIProvider
+from ai.project_context import build_project_context
 
 
 SYSTEM_INSTRUCTION = """
