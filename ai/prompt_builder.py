@@ -57,7 +57,7 @@ Selected equipment:
 Question intent:
 {route['intent']}
 
-Use only the supplied machine data when stating current values,
+Use only the supplied observations when stating current values,
 historical values, trends, alarms or operating states.
 
 Do not invent sensor readings.
@@ -70,7 +70,10 @@ Clearly separate:
 For a simple current-value question, answer directly and briefly.
 For a status or trend question, consider all supplied related tags.
 
-Machine data:
+Do not repeat the same operating state more than once.
+Do not repeat an observation using different wording.
+
+Confirmed engineering observations:
 {machine_context}
 
 Operator question:
@@ -78,3 +81,5 @@ Operator question:
 
 Give a clear and concise answer.
 """.strip()
+
+

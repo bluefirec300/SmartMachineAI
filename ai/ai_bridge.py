@@ -4,12 +4,19 @@ import requests
 
 from ai.ai_provider import AIProvider
 from ai.database_reader import DB_PATH, get_machine_history
-from ai.prompt_builder import build_prompt, format_machine_context
 from ai.router import route_question
 from ai.trend_analyzer import analyse_history
 
+from ai.observation_engine import (
+    ObservationEngine,
+    format_observations,
+)
+from ai.prompt_builder import build_prompt
+
 
 def main():
+
+    observation_engine = ObservationEngine()
     print("MMG Smart Machine AI")
     print(f"Database: {DB_PATH}")
     print("Question routing: enabled")
@@ -53,10 +60,16 @@ def main():
 
             summaries = analyse_history(history)
 
-            context = format_machine_context(
+            observations = observation_engine.build(
                 summaries=summaries,
                 intent=route["intent"],
             )
+
+            context = format_observations(
+                observations
+            )
+
+
 
             prompt = build_prompt(
                 question=question,
