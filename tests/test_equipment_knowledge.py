@@ -49,6 +49,32 @@ class TestEquipmentKnowledge(unittest.TestCase):
                     "cold_room",
                 )
 
+    def test_typo_tolerant_aliases(self):
+        cases = {
+            "How is the comprssor?": "compressor",
+            "Show chiler status.": "chiller",
+            "Is the cold rom too warm?": "cold_room",
+        }
+
+        for question, expected in cases.items():
+            with self.subTest(question=question):
+                self.assertEqual(
+                    self.knowledge.find_equipment(question),
+                    expected,
+                )
+
+    def test_unrelated_text_does_not_match(self):
+        questions = [
+            "How is production today?",
+            "Show the machine status.",
+            "Is everything healthy?",
+        ]
+
+        for question in questions:
+            with self.subTest(question=question):
+                self.assertIsNone(
+                    self.knowledge.find_equipment(question)
+                )
 
 if __name__ == "__main__":
     unittest.main()

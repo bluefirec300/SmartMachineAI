@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
-
+from difflib import SequenceMatcher
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -258,9 +258,9 @@ class EquipmentKnowledge:
         self,
         question: str,
     ) -> str | None:
-        text = question.lower()
+        text = question.lower().strip()
 
-        matches: list[tuple[int, str]] = []
+        exact_matches: list[tuple[int, str]] = []
 
         for equipment_name, equipment in self._equipment.items():
             aliases = equipment.get("aliases", [])
@@ -269,21 +269,67 @@ class EquipmentKnowledge:
                 normalized_alias = str(alias).lower().strip()
 
                 if normalized_alias and normalized_alias in text:
-                    matches.append(
+                    exact_matches.append(
                         (
                             len(normalized_alias),
                             equipment_name,
                         )
                     )
 
-        if not matches:
+        if exact_matches:
+            # Prefer the longest exact phrase.
+            exact_matches.sort(reverse=True)
+            return exact_matches[0][1]
+
+        words = [
+            word.strip(".,?!:;()[]{}")
+            for word in text.split()
+        ]
+
+        fuzzy_matches: list[tuple[float, int, str]] = []
+
+        for equipment_name, equipment in self._equipment.items():
+            aliases = equipment.get("aliases", [])
+
+            for alias in aliases:
+                normalized_alias = str(alias).lower().strip()
+
+                # Avoid fuzzy matching very short aliases.
+                if len(normalized_alias) < 5:
+                    continue
+
+                alias_words = normalized_alias.split()
+
+                for index in range(len(words)):
+                    candidate = " ".join(
+                        words[index:index + len(alias_words)]
+                    )
+
+                    if not candidate:
+                        continue
+
+                    score = SequenceMatcher(
+                        None,
+                        candidate,
+                        normalized_alias,
+                    ).ratio()
+
+                    if score >= 0.82:
+                        fuzzy_matches.append(
+                            (
+                                score,
+                                len(normalized_alias),
+                                equipment_name,
+                            )
+                        )
+
+        if not fuzzy_matches:
             return None
 
-        # Prefer the longest matching phrase.
-        matches.sort(reverse=True)
+        # Prefer highest similarity, then longest alias.
+        fuzzy_matches.sort(reverse=True)
 
-        return matches[0][1]
-
+        return fuzzy_matches[0][2]
 
 _default_knowledge = EquipmentKnowledge()
 
