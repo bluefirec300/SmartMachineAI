@@ -1,0 +1,17 @@
+[
+    {
+        "name": "Pressure",
+        "address": "DM100",
+        "type": "WORD"
+    },
+    {
+        "name": "Temperature",
+        "address": "DM101",
+        "type": "WORD"
+    },
+    {
+        "name": "FlowRate",
+        "address": "DM102",
+        "type": "WORD"
+    }
+]

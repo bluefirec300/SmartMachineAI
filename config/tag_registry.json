@@ -1,0 +1,254 @@
+[
+  {
+    "name": "CompressorPressure",
+    "description": "Compressor discharge pressure",
+    "unit": "bar",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorPressure",
+      "fins": "DM100",
+      "opcua": "ns=2;s=Compressor.Pressure"
+    }
+  },
+  {
+    "name": "CompressorTemperature",
+    "description": "Compressor temperature",
+    "unit": "degC",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorTemperature",
+      "fins": "DM101",
+      "opcua": "ns=2;s=Compressor.Temperature"
+    }
+  },
+  {
+    "name": "CompressorCurrent",
+    "description": "Compressor motor current",
+    "unit": "A",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorCurrent",
+      "fins": "DM102",
+      "opcua": "ns=2;s=Compressor.Current"
+    }
+  },
+  {
+    "name": "CompressorRunning",
+    "description": "Compressor running status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorRunning",
+      "fins": "CIO0.00",
+      "opcua": "ns=2;s=Compressor.Running"
+    }
+  },
+  {
+    "name": "CompressorWarning",
+    "description": "Compressor warning status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorWarning",
+      "fins": "CIO1.00",
+      "opcua": "ns=2;s=Compressor.Warning"
+    }
+  },
+  {
+    "name": "CompressorAlarm",
+    "description": "Compressor alarm status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "CompressorAlarm",
+      "fins": "CIO1.01",
+      "opcua": "ns=2;s=Compressor.Alarm"
+    }
+  },
+  {
+    "name": "ChillerSupplyTemp",
+    "description": "Chiller supply temperature",
+    "unit": "degC",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ChillerSupplyTemp",
+      "fins": "DM110",
+      "opcua": "ns=2;s=Chiller.SupplyTemp"
+    }
+  },
+  {
+    "name": "ChillerReturnTemp",
+    "description": "Chiller return temperature",
+    "unit": "degC",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ChillerReturnTemp",
+      "fins": "DM111",
+      "opcua": "ns=2;s=Chiller.ReturnTemp"
+    }
+  },
+  {
+    "name": "ChillerRunning",
+    "description": "Chiller running status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ChillerRunning",
+      "fins": "CIO0.01",
+      "opcua": "ns=2;s=Chiller.Running"
+    }
+  },
+  {
+    "name": "ChillerAlarm",
+    "description": "Chiller alarm status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ChillerAlarm",
+      "fins": "CIO1.02",
+      "opcua": "ns=2;s=Chiller.Alarm"
+    }
+  },
+  {
+    "name": "ColdRoomTemperature",
+    "description": "Cold room temperature",
+    "unit": "degC",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ColdRoomTemperature",
+      "fins": "DM120",
+      "opcua": "ns=2;s=ColdRoom.Temperature"
+    }
+  },
+  {
+    "name": "ColdRoomHumidity",
+    "description": "Cold room humidity",
+    "unit": "%",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ColdRoomHumidity",
+      "fins": "DM121",
+      "opcua": "ns=2;s=ColdRoom.Humidity"
+    }
+  },
+  {
+    "name": "ColdRoomDoor",
+    "description": "Cold room door status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ColdRoomDoor",
+      "fins": "CIO0.02",
+      "opcua": "ns=2;s=ColdRoom.Door"
+    }
+  },
+  {
+    "name": "ColdRoomAlarm",
+    "description": "Cold room alarm status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "ColdRoomAlarm",
+      "fins": "CIO1.03",
+      "opcua": "ns=2;s=ColdRoom.Alarm"
+    }
+  },
+  {
+    "name": "TankLevel",
+    "description": "Tank level",
+    "unit": "%",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "TankLevel",
+      "fins": "DM130",
+      "opcua": "ns=2;s=Tank.Level"
+    }
+  },
+  {
+    "name": "TransferPumpRunning",
+    "description": "Transfer pump running status",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "TransferPumpRunning",
+      "fins": "CIO0.03",
+      "opcua": "ns=2;s=TransferPump.Running"
+    }
+  },
+  {
+    "name": "TransferPumpCurrent",
+    "description": "Transfer pump current",
+    "unit": "A",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "TransferPumpCurrent",
+      "fins": "DM131",
+      "opcua": "ns=2;s=TransferPump.Current"
+    }
+  },
+  {
+    "name": "TankLowAlarm",
+    "description": "Tank low-level alarm",
+    "unit": "",
+    "data_type": "BOOL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "TankLowAlarm",
+      "fins": "CIO1.04",
+      "opcua": "ns=2;s=Tank.LowAlarm"
+    }
+  },
+  {
+    "name": "FactoryEnergyKW",
+    "description": "Factory electrical load",
+    "unit": "kW",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "FactoryEnergyKW",
+      "fins": "DM140",
+      "opcua": "ns=2;s=Factory.EnergyKW"
+    }
+  },
+  {
+    "name": "WaterPressure",
+    "description": "Factory water pressure",
+    "unit": "bar",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "WaterPressure",
+      "fins": "DM141",
+      "opcua": "ns=2;s=Factory.WaterPressure"
+    }
+  },
+  {
+    "name": "AirPressure",
+    "description": "Factory compressed-air pressure",
+    "unit": "bar",
+    "data_type": "REAL",
+    "enabled": true,
+    "addresses": {
+      "simulator": "AirPressure",
+      "fins": "DM142",
+      "opcua": "ns=2;s=Factory.AirPressure"
+    }
+  }
+]
