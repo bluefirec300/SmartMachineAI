@@ -1,53 +1,50 @@
-import os
+from collections.abc import Iterator
 
-from ai.ollama_client import stream_ollama
-from ai.openai_client import OpenAIClient
+from ai.providers.base_provider import BaseAIProvider
+from ai.providers.provider_factory import ProviderFactory
 
 
 class AIProvider:
-    """Selects and uses either OpenAI or Ollama."""
+    """
+    Backward-compatible facade for AI providers.
 
-    def __init__(self):
-        self.provider = os.getenv(
-            "AI_PROVIDER",
-            "ollama",
-        ).strip().lower()
+    Existing callers can continue using:
 
-        self.client = None
+        ai = AIProvider()
+        ai.provider
+        ai.model
+        ai.generate(prompt)
+        ai.stream(prompt)
+    """
 
-        if self.provider == "openai":
-            self.client = OpenAIClient()
-
-        elif self.provider == "ollama":
-            pass
-
-        else:
-            raise ValueError(
-                f"Unsupported AI_PROVIDER: {self.provider}. "
-                "Use 'openai' or 'ollama'."
+    def __init__(
+        self,
+        provider_name: str | None = None,
+        client: BaseAIProvider | None = None,
+    ):
+        self.client = (
+            client
+            or ProviderFactory.create(
+                provider_name=provider_name
             )
+        )
 
-    def generate(self, prompt):
-        """Generate one complete response."""
+    @property
+    def provider(self) -> str:
+        return self.client.name
 
-        if not prompt or not prompt.strip():
-            return "No prompt was provided."
+    @property
+    def model(self) -> str:
+        return self.client.model
 
-        if self.provider == "ollama":
-            return "".join(stream_ollama(prompt))
-
+    def generate(
+        self,
+        prompt: str,
+    ) -> str:
         return self.client.generate(prompt)
 
-    def stream(self, prompt):
-        """Yield response text in chunks."""
-
-        if not prompt or not prompt.strip():
-            yield "No prompt was provided."
-            return
-
-        if self.provider == "ollama":
-            yield from stream_ollama(prompt)
-            return
-
-        answer = self.client.generate(prompt)
-        yield answer
+    def stream(
+        self,
+        prompt: str,
+    ) -> Iterator[str]:
+        yield from self.client.stream(prompt)
