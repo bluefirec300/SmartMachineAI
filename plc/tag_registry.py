@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from config.configuration_manager import ConfigurationManager
+from config.configuration_service import get_configuration
 
 
 class TagRegistry:
@@ -87,9 +88,18 @@ class TagRegistry:
                 f"Configuration database not found: {self.database_path}"
             )
 
-        config = ConfigurationManager(
-            database_path=self.database_path
-        )
+        default_database_path = (
+            Path(__file__).resolve().parent.parent
+            / "database"
+            / "config.db"
+        ).resolve()
+
+        if self.database_path.resolve() == default_database_path:
+            config = get_configuration()
+        else:
+            config = ConfigurationManager(
+                database_path=self.database_path
+            )
 
         database_tags = config.get_tags(
             enabled_only=False
