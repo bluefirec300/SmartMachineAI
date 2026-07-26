@@ -4,37 +4,47 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
-SCHEMA_PATH = (
-    PROJECT_ROOT
-    / "database"
-    / "schema"
-    / "001_create_config.sql"
-)
+SCHEMA_DIRECTORY = PROJECT_ROOT / "database" / "schema"
+
+
+def get_schema_files() -> list[Path]:
+    if not SCHEMA_DIRECTORY.exists():
+        raise FileNotFoundError(
+            f"Schema directory not found: {SCHEMA_DIRECTORY}"
+        )
+
+    schema_files = sorted(
+        SCHEMA_DIRECTORY.glob("*.sql")
+    )
+
+    if not schema_files:
+        raise FileNotFoundError(
+            f"No SQL schema files found in: {SCHEMA_DIRECTORY}"
+        )
+
+    return schema_files
 
 
 def initialize_config_database() -> Path:
-    if not SCHEMA_PATH.exists():
-        raise FileNotFoundError(
-            f"Schema file not found: {SCHEMA_PATH}"
-        )
-
     DATABASE_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    schema_sql = SCHEMA_PATH.read_text(
-        encoding="utf-8"
-    )
-
     connection = sqlite3.connect(DATABASE_PATH)
 
     try:
-        connection.execute(
-            "PRAGMA foreign_keys = ON"
-        )
+        connection.execute("PRAGMA foreign_keys = ON")
 
-        connection.executescript(schema_sql)
+        for schema_file in get_schema_files():
+            print(f"Applying: {schema_file.name}")
+
+            schema_sql = schema_file.read_text(
+                encoding="utf-8"
+            )
+
+            connection.executescript(schema_sql)
+
         connection.commit()
 
     except Exception:
@@ -50,9 +60,7 @@ def initialize_config_database() -> Path:
 def main() -> None:
     database_path = initialize_config_database()
 
-    print(
-        "Configuration database initialized:"
-    )
+    print("Configuration database initialized:")
     print(database_path)
 
 

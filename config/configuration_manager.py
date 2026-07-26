@@ -292,7 +292,319 @@ class ConfigurationManager:
             return self._row_to_dict(row)
 
         finally:
+
+
             connection.close()
+
+    def add_tag(
+        self,
+        tag_name: str,
+        equipment_name: str | None = None,
+        description: str = "",
+        data_type: str = "float",
+        unit: str = "",
+        enabled: bool = True,
+        username: str = "system",
+    ) -> int:
+        connection = self._connect()
+
+        try:
+            equipment_id = None
+
+            if equipment_name is not None:
+                equipment_row = connection.execute(
+                    """
+                    SELECT id
+                    FROM equipment
+                    WHERE name = ?
+                    """,
+                    (equipment_name,),
+                ).fetchone()
+
+                if equipment_row is None:
+                    raise ValueError(
+                        f"Unknown equipment: {equipment_name}"
+                    )
+
+                equipment_id = equipment_row["id"]
+
+            cursor = connection.execute(
+                """
+                INSERT INTO tags (
+                    equipment_id,
+                    tag_name,
+                    description,
+                    data_type,
+                    unit,
+                    enabled
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    equipment_id,
+                    tag_name,
+                    description,
+                    data_type,
+                    unit,
+                    int(enabled),
+                ),
+            )
+
+            tag_id = int(cursor.lastrowid)
+
+            self.write_audit_log(
+                username=username,
+                action="create",
+                entity_type="tag",
+                entity_name=tag_name,
+                new_value={
+                    "equipment_name": equipment_name,
+                    "description": description,
+                    "data_type": data_type,
+                    "unit": unit,
+                    "enabled": enabled,
+                },
+                connection=connection,
+            )
+
+            connection.commit()
+            return tag_id
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        finally:
+            connection.close()
+
+    def add_tag_address(
+        self,
+        tag_name: str,
+        driver: str,
+        address: str,
+        enabled: bool = True,
+        username: str = "system",
+    ) -> int:
+        connection = self._connect()
+
+        try:
+            tag_row = connection.execute(
+                """
+                SELECT id
+                FROM tags
+                WHERE tag_name = ?
+                """,
+                (tag_name,),
+            ).fetchone()
+
+            if tag_row is None:
+                raise ValueError(
+                    f"Unknown tag: {tag_name}"
+                )
+
+            cursor = connection.execute(
+                """
+                INSERT INTO tag_addresses (
+                    tag_id,
+                    driver,
+                    address,
+                    enabled
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    tag_row["id"],
+                    driver,
+                    address,
+                    int(enabled),
+                ),
+            )
+
+            address_id = int(cursor.lastrowid)
+
+            self.write_audit_log(
+                username=username,
+                action="create",
+                entity_type="tag_address",
+                entity_name=f"{tag_name}.{driver}",
+                new_value={
+                    "address": address,
+                    "enabled": enabled,
+                },
+                connection=connection,
+            )
+
+            connection.commit()
+            return address_id
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        finally:
+            connection.close()
+
+    def set_tag_address(
+        self,
+        tag_name: str,
+        driver: str,
+        address: str,
+        enabled: bool = True,
+        username: str = "system",
+    ) -> dict[str, Any]:
+        connection = self._connect()
+
+        try:
+            tag_row = connection.execute(
+                """
+                SELECT id
+                FROM tags
+                WHERE tag_name = ?
+                """,
+                (tag_name,),
+            ).fetchone()
+
+            if tag_row is None:
+                raise ValueError(
+                    f"Unknown tag: {tag_name}"
+                )
+
+            existing_row = connection.execute(
+                """
+                SELECT
+                    id,
+                    address,
+                    enabled
+                FROM tag_addresses
+                WHERE tag_id = ?
+                  AND driver = ?
+                """,
+                (
+                    tag_row["id"],
+                    driver,
+                ),
+            ).fetchone()
+
+            old_value = (
+                dict(existing_row)
+                if existing_row is not None
+                else None
+            )
+
+            connection.execute(
+                """
+                INSERT INTO tag_addresses (
+                    tag_id,
+                    driver,
+                    address,
+                    enabled
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tag_id, driver)
+                DO UPDATE SET
+                    address = excluded.address,
+                    enabled = excluded.enabled
+                """,
+                (
+                    tag_row["id"],
+                    driver,
+                    address,
+                    int(enabled),
+                ),
+            )
+
+            updated_row = connection.execute(
+                """
+                SELECT
+                    driver,
+                    address,
+                    enabled
+                FROM tag_addresses
+                WHERE tag_id = ?
+                  AND driver = ?
+                """,
+                (
+                    tag_row["id"],
+                    driver,
+                ),
+            ).fetchone()
+
+            result = dict(updated_row)
+
+            self.write_audit_log(
+                username=username,
+                action="set_tag_address",
+                entity_type="tag_address",
+                entity_name=f"{tag_name}.{driver}",
+                old_value=old_value,
+                new_value=result,
+                connection=connection,
+            )
+
+            connection.commit()
+            return result
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        finally:
+            connection.close()
+
+    def get_tag_addresses(
+        self,
+        tag_name: str | None = None,
+        driver: str | None = None,
+        enabled_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        conditions = []
+        parameters: list[Any] = []
+
+        if tag_name is not None:
+            conditions.append("tags.tag_name = ?")
+            parameters.append(tag_name)
+
+        if driver is not None:
+            conditions.append("tag_addresses.driver = ?")
+            parameters.append(driver)
+
+        if enabled_only:
+            conditions.append("tag_addresses.enabled = 1")
+
+        where_clause = ""
+
+        if conditions:
+            where_clause = (
+                "WHERE " + " AND ".join(conditions)
+            )
+
+        connection = self._connect()
+
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    tags.tag_name,
+                    tag_addresses.driver,
+                    tag_addresses.address,
+                    tag_addresses.enabled
+                FROM tag_addresses
+                INNER JOIN tags
+                    ON tags.id = tag_addresses.tag_id
+                {where_clause}
+                ORDER BY
+                    tags.tag_name,
+                    tag_addresses.driver
+                """,
+                parameters,
+            ).fetchall()
+
+            return [dict(row) for row in rows]
+
+        finally:
+            connection.close()
+
+
 
     def get_threshold(
         self,
