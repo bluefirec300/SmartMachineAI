@@ -220,6 +220,23 @@ class EquipmentKnowledge:
 
         return equipment.copy()
 
+    def get_aliases(
+        self,
+        equipment_name: str,
+    ) -> list[str]:
+        equipment = self.get(equipment_name)
+
+        if equipment is None:
+            return []
+
+        aliases = equipment.get("aliases", [])
+
+        return [
+            str(alias).strip()
+            for alias in aliases
+            if str(alias).strip()
+        ]
+
     def get_tags(
         self,
         equipment_name: str,

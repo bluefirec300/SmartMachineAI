@@ -80,44 +80,6 @@ STATUS_WORDS = {
 }
 
 
-EQUIPMENT_ALIASES = {
-    "compressor": {
-        "compressor",
-        "compressed air",
-    },
-    "chiller": {
-        "chiller",
-        "cooling water",
-    },
-    "cold_room": {
-        "cold room",
-        "coldroom",
-        "cold storage",
-    },
-    "tank": {
-        "tank",
-    },
-    "pump": {
-        "pump",
-        "transfer pump",
-    },
-    "energy": {
-        "energy",
-        "power",
-        "kilowatt",
-        "kw",
-    },
-    "water": {
-        "water",
-        "water pressure",
-    },
-    "air": {
-        "air pressure",
-        "compressed air",
-    },
-}
-
-
 MEASUREMENT_ALIASES = {
     "pressure": {
         "pressure",
@@ -258,7 +220,6 @@ def build_tag_search_text(tag: dict[str, Any]) -> str:
 
     return normalize_text(" ".join(parts))
 
-
 def tag_matches_equipment(
     tag: dict[str, Any],
     equipment: str,
@@ -267,8 +228,9 @@ def tag_matches_equipment(
         return True
 
     search_text = build_tag_search_text(tag)
+    aliases = equipment_knowledge.get_aliases(equipment)
 
-    for alias in EQUIPMENT_ALIASES.get(equipment, set()):
+    for alias in aliases:
         if contains_phrase(search_text, alias):
             return True
 
@@ -287,10 +249,14 @@ def tag_matches_measurements(
     for measurement in measurements:
         aliases = MEASUREMENT_ALIASES.get(measurement, set())
 
-        if any(contains_phrase(search_text, alias) for alias in aliases):
+        if any(
+            contains_phrase(search_text, alias)
+            for alias in aliases
+        ):
             return True
 
     return False
+
 
 
 def get_enabled_tags() -> list[dict[str, Any]]:
