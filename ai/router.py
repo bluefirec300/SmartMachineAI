@@ -273,15 +273,18 @@ def select_tags(
     question: str,
     equipment: str,
     intent: str,
+    measurements: set[str] | None = None,
 ) -> list[str] | None:
+
     registered_tags = get_enabled_tags()
     registered_names = {
         tag["name"]
         for tag in registered_tags
     }
 
-    measurements = detect_measurements(question)
-
+    if measurements is None:
+        measurements = detect_measurements(question)
+        
     # For a named equipment system, use the engineering
     # relationships from equipment_knowledge.json.
     if equipment != "factory":
