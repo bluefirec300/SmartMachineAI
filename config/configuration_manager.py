@@ -204,16 +204,19 @@ class ConfigurationManager:
         driver: str | None = None,
         enabled_only: bool = False,
     ) -> list[dict[str, Any]]:
-        conditions = []
+        """
+        Return logical tag definitions.
+
+        When a driver is supplied, its address is loaded from
+        tag_addresses. The legacy tags.driver and tags.address columns
+        are intentionally ignored.
+        """
+        conditions: list[str] = []
         parameters: list[Any] = []
 
         if equipment_name is not None:
             conditions.append("equipment.name = ?")
             parameters.append(equipment_name)
-
-        if driver is not None:
-            conditions.append("tags.driver = ?")
-            parameters.append(driver)
 
         if enabled_only:
             conditions.append("tags.enabled = 1")
@@ -221,33 +224,59 @@ class ConfigurationManager:
         where_clause = ""
 
         if conditions:
-            where_clause = (
-                "WHERE " + " AND ".join(conditions)
-            )
+            where_clause = "WHERE " + " AND ".join(conditions)
 
         connection = self._connect()
 
         try:
-            rows = connection.execute(
-                f"""
-                SELECT
-                    tags.id,
-                    tags.tag_name,
-                    tags.description,
-                    tags.driver,
-                    tags.address,
-                    tags.data_type,
-                    tags.unit,
-                    tags.enabled,
-                    equipment.name AS equipment_name
-                FROM tags
-                LEFT JOIN equipment
-                    ON equipment.id = tags.equipment_id
-                {where_clause}
-                ORDER BY tags.tag_name
-                """,
-                parameters,
-            ).fetchall()
+            if driver is None:
+                rows = connection.execute(
+                    f"""
+                    SELECT
+                        tags.id,
+                        tags.tag_name,
+                        tags.description,
+                        NULL AS driver,
+                        NULL AS address,
+                        tags.data_type,
+                        tags.unit,
+                        tags.enabled,
+                        equipment.name AS equipment_name
+                    FROM tags
+                    LEFT JOIN equipment
+                        ON equipment.id = tags.equipment_id
+                    {where_clause}
+                    ORDER BY tags.tag_name
+                    """,
+                    parameters,
+                ).fetchall()
+
+            else:
+                driver_parameters = [driver, *parameters]
+
+                rows = connection.execute(
+                    f"""
+                    SELECT
+                        tags.id,
+                        tags.tag_name,
+                        tags.description,
+                        tag_addresses.driver,
+                        tag_addresses.address,
+                        tags.data_type,
+                        tags.unit,
+                        tags.enabled,
+                        equipment.name AS equipment_name
+                    FROM tags
+                    INNER JOIN tag_addresses
+                        ON tag_addresses.tag_id = tags.id
+                       AND tag_addresses.driver = ?
+                    LEFT JOIN equipment
+                        ON equipment.id = tags.equipment_id
+                    {where_clause}
+                    ORDER BY tags.tag_name
+                    """,
+                    driver_parameters,
+                ).fetchall()
 
             return [dict(row) for row in rows]
 
@@ -259,41 +288,66 @@ class ConfigurationManager:
         tag_name: str,
         driver: str | None = None,
     ) -> dict[str, Any] | None:
-        conditions = ["tags.tag_name = ?"]
-        parameters: list[Any] = [tag_name]
+        """
+        Return one logical tag.
 
-        if driver is not None:
-            conditions.append("tags.driver = ?")
-            parameters.append(driver)
-
+        When a driver is supplied, its protocol address is loaded from
+        tag_addresses rather than the deprecated columns in tags.
+        """
         connection = self._connect()
 
         try:
-            row = connection.execute(
-                f"""
-                SELECT
-                    tags.id,
-                    tags.tag_name,
-                    tags.description,
-                    tags.driver,
-                    tags.address,
-                    tags.data_type,
-                    tags.unit,
-                    tags.enabled,
-                    equipment.name AS equipment_name
-                FROM tags
-                LEFT JOIN equipment
-                    ON equipment.id = tags.equipment_id
-                WHERE {" AND ".join(conditions)}
-                """,
-                parameters,
-            ).fetchone()
+            if driver is None:
+                row = connection.execute(
+                    """
+                    SELECT
+                        tags.id,
+                        tags.tag_name,
+                        tags.description,
+                        NULL AS driver,
+                        NULL AS address,
+                        tags.data_type,
+                        tags.unit,
+                        tags.enabled,
+                        equipment.name AS equipment_name
+                    FROM tags
+                    LEFT JOIN equipment
+                        ON equipment.id = tags.equipment_id
+                    WHERE tags.tag_name = ?
+                    """,
+                    (tag_name,),
+                ).fetchone()
+
+            else:
+                row = connection.execute(
+                    """
+                    SELECT
+                        tags.id,
+                        tags.tag_name,
+                        tags.description,
+                        tag_addresses.driver,
+                        tag_addresses.address,
+                        tags.data_type,
+                        tags.unit,
+                        tags.enabled,
+                        equipment.name AS equipment_name
+                    FROM tags
+                    INNER JOIN tag_addresses
+                        ON tag_addresses.tag_id = tags.id
+                       AND tag_addresses.driver = ?
+                    LEFT JOIN equipment
+                        ON equipment.id = tags.equipment_id
+                    WHERE tags.tag_name = ?
+                    """,
+                    (
+                        driver,
+                        tag_name,
+                    ),
+                ).fetchone()
 
             return self._row_to_dict(row)
 
         finally:
-
-
             connection.close()
 
     def add_tag(
