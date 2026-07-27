@@ -1,31 +1,44 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Virtual environments
 venv/
 .venv/
+env/
 
-# Secrets
+# Runtime data
+logs/*
+!logs/.gitkeep
+backups/*
+!backups/.gitkeep
+
+# Databases and backups
+database/*.db
+database/*.db-*
+database/*.sqlite
+database/*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local configuration and secrets
 .env
 .env.*
-*.key
+config/local_settings.json
+config/secrets.json
 
-# Runtime databases
-*.db
-*.db-journal
-*.sqlite
-*.sqlite3
-*.dbcp
-
-# Generated files
-logs/
-backups/
-*.log
-
-# Editors and OS
+# IDE / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
