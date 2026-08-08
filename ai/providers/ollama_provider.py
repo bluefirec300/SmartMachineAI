@@ -16,7 +16,7 @@ class OllamaProvider(BaseAIProvider):
         base_url: str,
         model: str,
         connect_timeout: int = 10,
-        read_timeout: int = 300,
+        read_timeout: int = 600,
     ):
         if not base_url.strip():
             raise ValueError(

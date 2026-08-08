@@ -76,7 +76,7 @@ class DatabaseManager:
                 VALUES (?, ?, ?, ?)
                 """,
                 (
-                    record_time.isoformat(timespec="seconds"),
+                    record_time.strftime("%Y-%m-%d %H:%M:%S"),
                     tag,
                     address,
                     float(value),
@@ -153,7 +153,7 @@ class DatabaseManager:
                 """,
                 (
                     tag,
-                    start_time.isoformat(timespec="seconds"),
+                    start_time.strftime("%Y-%m-%d %H:%M:%S"),
                     limit,
                 ),
             ).fetchall()
@@ -172,7 +172,7 @@ class DatabaseManager:
                 DELETE FROM plc_data
                 WHERE time < ?
                 """,
-                (cutoff_time.isoformat(timespec="seconds"),),
+                (cutoff_time.strftime("%Y-%m-%d %H:%M:%S"),),
             )
 
             deleted_rows = cursor.rowcount
