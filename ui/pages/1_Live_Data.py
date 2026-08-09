@@ -65,11 +65,14 @@ for tag in tags:
 
 df = pd.DataFrame(rows)
 
+# Explicit text color alongside background - Streamlit's dark theme
+# defaults to white table text, which is unreadable against these
+# light backgrounds if only background-color is set.
 status_colors = {
-    "ALARM": "background-color: #ffb3b3",
-    "WARNING": "background-color: #ffe6a3",
-    "NO DATA": "background-color: #e0e0e0",
-    "TEXT TAG": "background-color: #eeeeee",
+    "ALARM": "background-color: #ffb3b3; color: #1a1a1a",
+    "WARNING": "background-color: #ffe6a3; color: #1a1a1a",
+    "NO DATA": "background-color: #e0e0e0; color: #1a1a1a",
+    "TEXT TAG": "background-color: #eeeeee; color: #1a1a1a",
 }
 
 
