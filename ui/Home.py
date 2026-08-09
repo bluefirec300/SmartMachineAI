@@ -24,16 +24,19 @@ st.markdown(
     """
 Use the pages in the sidebar:
 
+- **Ask AI** - ask questions in plain English ("why is the compressor
+  pressure dropping") without needing the terminal.
 - **Live Data** - current value of every enabled tag, grouped by
   equipment, with engineering-limit status.
 - **Setpoints** - view/edit the low/high warning and alarm limits.
 - **Service & Maintenance** - two tabs: Service (one-off service
   visits, no schedule) and Maintenance (upcoming/overdue tracking and
   a log of past work).
-- **Ask AI** - ask questions in plain English ("why is the compressor
-  pressure dropping") without needing the terminal.
 - **Event Records** - browse the full alarm/warning history, filterable
   by severity, equipment, tag, and time range.
+- **Simulator Control** *(temporary dev tool)* - manually trigger a
+  realistic fault on any simulated equipment instance, for testing
+  the AI's root-cause diagnosis on demand.
 
 This shows whatever is currently **enabled** in `database/config.db`
 - as more of the P01/P02/Phase 2/3 tag dataset gets enabled

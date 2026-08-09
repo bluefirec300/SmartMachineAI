@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,21 @@ def canonical_key(tag_name: str) -> str:
 
     return ".".join(stripped)
 
+
+def instance_key(tag_name: str) -> str:
+    """
+    The specific physical unit a tag belongs to - e.g.
+    "P01.UTILITY.AC01.OutletTemp" -> "P01.UTILITY.AC01". Unlike
+    canonical_key(), instance numbers are kept (AC01 stays AC01, not
+    AC) since each physical unit has its own independent fault state.
+    Exposed at module level (not just as TagDatasetSimulator's
+    internal staticmethod) so the Simulator Control UI page can
+    compute the same key to target a fault command correctly.
+    """
+    parts = tag_name.split(".")
+    return ".".join(parts[:-1]) if len(parts) >= 2 else tag_name
+
+
 FAULT_DIRECTION_DOWN = {"pressure", "flow", "level"}
 
 # Per-cycle probability a dormant equipment instance starts a fault
@@ -209,6 +225,32 @@ class _InstanceFaultState:
 
         return 0.0
 
+    def force_start(self) -> bool:
+        """
+        Manually kick off the developing phase, same as the random
+        trigger in advance() would - used by the temporary Simulator
+        Control page to test AI diagnosis on demand instead of waiting
+        for a random fault. No-op (returns False) if a fault is
+        already in progress, so it can't be double-triggered mid-cycle.
+        """
+        if self.phase != "dormant":
+            return False
+
+        self.phase = "developing"
+        self._span = self._rng.randint(*DEVELOPING_CYCLES)
+        self._remaining = self._span
+        return True
+
+    def force_recover(self) -> bool:
+        """Manually cut a fault short, skipping straight to recovering."""
+        if self.phase == "dormant":
+            return False
+
+        self.phase = "recovering"
+        self._span = self._rng.randint(*RECOVERING_CYCLES)
+        self._remaining = self._span
+        return True
+
 
 class TagDatasetSimulator:
     """
@@ -234,6 +276,68 @@ class TagDatasetSimulator:
         self._instances: dict[str, _InstanceFaultState] = {}
 
         self._initialize_state()
+        self._ensure_command_table()
+
+    def _ensure_command_table(self) -> None:
+        """
+        Backs the temporary Simulator Control UI page - lets a separate
+        process (Streamlit) hand this process (plc_logger) a "trigger
+        this instance's fault now" command without any direct IPC.
+        Self-provisioning rather than a full migrator script since this
+        is explicitly a temporary/dev feature, easy to strip out later.
+        """
+        connection = sqlite3.connect(self.database_path)
+
+        try:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS simulator_fault_commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    instance_key TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    processed_at TEXT,
+                    result TEXT
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _apply_pending_commands(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+
+        try:
+            pending = connection.execute(
+                "SELECT id, instance_key, action FROM simulator_fault_commands "
+                "WHERE processed_at IS NULL"
+            ).fetchall()
+
+            if not pending:
+                return
+
+            for row in pending:
+                instance = self._instances.get(row["instance_key"])
+
+                if instance is None:
+                    result = "unknown instance"
+                elif row["action"] == "trigger_fault":
+                    result = "started" if instance.force_start() else f"skipped (already {instance.phase})"
+                elif row["action"] == "force_recover":
+                    result = "recovering" if instance.force_recover() else "skipped (already dormant)"
+                else:
+                    result = f"unknown action: {row['action']}"
+
+                connection.execute(
+                    "UPDATE simulator_fault_commands SET processed_at = ?, result = ? WHERE id = ?",
+                    (datetime.utcnow().isoformat(timespec="seconds"), result, row["id"]),
+                )
+
+            connection.commit()
+        finally:
+            connection.close()
 
     def _load_tags(self) -> list[dict[str, Any]]:
         connection = sqlite3.connect(self.database_path)
@@ -257,8 +361,7 @@ class TagDatasetSimulator:
 
     @staticmethod
     def _instance_key(tag_name: str) -> str:
-        parts = tag_name.split(".")
-        return ".".join(parts[:-1]) if len(parts) >= 2 else tag_name
+        return instance_key(tag_name)
 
     @staticmethod
     def _profile(tag_name: str, unit: str) -> dict[str, float]:
@@ -329,14 +432,24 @@ class TagDatasetSimulator:
 
         fault_push = direction * severity * band * 0.35
 
-        value = current + noise + reversion + fault_push
+        # A sustained fault otherwise keeps compounding fault_push cycle
+        # after cycle with nothing to cap it, drifting to physically
+        # implausible values (e.g. an air compressor discharge temp
+        # past 200 degC) well before the ~10-30 cycle faulted phase
+        # ends. Clamp the trend (not the final value) to a full
+        # band-width beyond the profile's normal range - still a
+        # clear, sustained excursion past any configured alarm limit,
+        # just not an absurd one - then add noise afterwards, so a
+        # "maxed out" plateau still jitters like a real sensor instead
+        # of reading bit-for-bit identical every cycle.
+        trend = current + reversion + fault_push
+        lower_bound = profile["low"] - band
+        if profile["low"] >= 0:
+            lower_bound = max(0.0, lower_bound)
+        upper_bound = profile["high"] + band
+        trend = min(max(trend, lower_bound), upper_bound)
 
-        return round(
-            max(0.0, value)
-            if profile["low"] >= 0
-            else value,
-            3,
-        )
+        return round(trend + noise, 3)
 
     def _update_bool(
         self,
@@ -384,6 +497,8 @@ class TagDatasetSimulator:
         return "None"
 
     def update_values(self) -> None:
+        self._apply_pending_commands()
+
         for instance in self._instances.values():
             instance.advance()
 

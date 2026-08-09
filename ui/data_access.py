@@ -249,3 +249,89 @@ def get_service_history(equipment_id: int | None = None) -> list[dict[str, Any]]
         connection.close()
 
     return [dict(row) for row in rows]
+
+
+def get_simulator_instances() -> list[dict[str, Any]]:
+    """
+    One row per physical simulated equipment instance (not per tag) -
+    backs the temporary Simulator Control page's equipment picker.
+    instance_key matches simulator.tag_dataset_model.instance_key()
+    exactly, since that's what plc_logger's running TagDatasetSimulator
+    looks up commands by.
+    """
+    from simulator.tag_dataset_model import instance_key as compute_instance_key
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    for tag in get_enabled_tags():
+        if tag["data_type"] == "STRING" or tag["tag_name"].count(".") < 3:
+            continue
+
+        key = compute_instance_key(tag["tag_name"])
+
+        if key not in seen:
+            seen[key] = {
+                "instance_key": key,
+                "equipment_display_name": tag["equipment_display_name"],
+            }
+
+    return sorted(seen.values(), key=lambda row: row["equipment_display_name"])
+
+
+def send_simulator_command(instance_key: str, action: str) -> None:
+    """
+    Hands a fault-lifecycle command to whichever process is running
+    plc_logger (a separate OS process from this Streamlit app) via a
+    small polling table - see TagDatasetSimulator._apply_pending_commands.
+    Self-provisions the table so this works even if plc_logger hasn't
+    created it yet.
+    """
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS simulator_fault_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                processed_at TEXT,
+                result TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO simulator_fault_commands (instance_key, action, created_at) VALUES (?, ?, ?)",
+            (instance_key, action, datetime.utcnow().isoformat(timespec="seconds")),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_simulator_command_log(limit: int = 20) -> list[dict[str, Any]]:
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS simulator_fault_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                processed_at TEXT,
+                result TEXT
+            )
+            """
+        )
+        rows = connection.execute(
+            "SELECT * FROM simulator_fault_commands ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return [dict(row) for row in rows]
