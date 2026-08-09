@@ -32,7 +32,7 @@ UNIT_PROFILES: dict[str, dict[str, float]] = {
 
 DEFAULT_PROFILE = {"low": 10, "high": 50, "noise": 0.5, "revert": 0.05}
 
-MONOTONIC_UNITS = {"kWh", "h", "m³"}
+MONOTONIC_UNITS = {"kWh", "h", "m³", "Nm³"}
 
 # Per-signal normal operating bands, keyed by canonical_key(tag_name) -
 # see that function. Unlike UNIT_PROFILES (generic per unit, so every

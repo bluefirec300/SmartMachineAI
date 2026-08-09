@@ -68,6 +68,42 @@ def _status_for(due: date | None, today: date) -> str:
 STATUS_ORDER = {"OVERDUE": 0, "DUE SOON": 1, "OK": 2, "NOT SCHEDULED": 3}
 STATUS_ICONS = {"OVERDUE": "🔴", "DUE SOON": "🟠", "OK": "🟢", "NOT SCHEDULED": "⚪"}
 
+if "ignored_overdue" not in st.session_state:
+    # Session-only dismissal, not persisted - "ignore" just clears an
+    # overdue item from view for now, unlike "done" which writes a
+    # real maintenance_log record. Resets on page reload by design.
+    st.session_state["ignored_overdue"] = set()
+
+
+@st.dialog("Mark maintenance as done")
+def _mark_done_dialog(equipment: dict) -> None:
+    st.write(f"**{equipment['display_name']}**")
+
+    category = st.selectbox("Category", CATEGORIES, key="dialog_category")
+    report = st.text_area(
+        "Maintenance report",
+        placeholder="e.g. Changed compressor oil, replaced air filter",
+        key="dialog_report",
+    )
+    performed_at = st.date_input("Date performed", value=date.today(), key="dialog_performed_at")
+    suggested_next_due = _next_due(equipment) or date.today()
+    next_due = st.date_input("Next due date", value=suggested_next_due, key="dialog_next_due")
+
+    if st.button("Save", type="primary", key="dialog_save"):
+        if not report.strip():
+            st.error("Please describe what was done.")
+        else:
+            add_maintenance_entry(
+                equipment_id=equipment["id"],
+                category=category,
+                description=report.strip(),
+                performed_at=performed_at.isoformat(),
+                next_due_at=next_due.isoformat(),
+            )
+            st.session_state["ignored_overdue"].discard(equipment["id"])
+            st.rerun()
+
+
 equipment_list = get_equipment_list()
 today = date.today()
 
@@ -94,6 +130,12 @@ schedule_rows.sort(
     )
 )
 
+schedule_rows = [
+    row
+    for row in schedule_rows
+    if row["equipment"]["id"] not in st.session_state["ignored_overdue"]
+]
+
 for row in schedule_rows:
     equipment = row["equipment"]
     status = row["status"]
@@ -107,11 +149,24 @@ for row in schedule_rows:
     else:
         detail = f" ({row['days_left']} days left)"
 
-    st.write(
-        f"{STATUS_ICONS[status]} **{equipment['display_name']}** "
-        f"({brand_model}) — next due: {due_text}{detail} — last serviced: "
-        f"{equipment['last_serviced_at'] or 'unknown'}"
-    )
+    line_col, done_col, ignore_col = st.columns([6, 1, 1])
+
+    with line_col:
+        st.write(
+            f"{STATUS_ICONS[status]} **{equipment['display_name']}** "
+            f"({brand_model}) — next due: {due_text}{detail} — last serviced: "
+            f"{equipment['last_serviced_at'] or 'unknown'}"
+        )
+
+    if status == "OVERDUE":
+        with done_col:
+            if st.button("✅ Done", key=f"done_{equipment['id']}"):
+                _mark_done_dialog(equipment)
+
+        with ignore_col:
+            if st.button("🚫 Ignore", key=f"ignore_{equipment['id']}"):
+                st.session_state["ignored_overdue"].add(equipment["id"])
+                st.rerun()
 
 st.divider()
 st.subheader("Log Maintenance Work")

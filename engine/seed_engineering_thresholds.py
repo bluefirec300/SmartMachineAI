@@ -46,7 +46,9 @@ THRESHOLD_PROFILES: dict[str, dict[str, float | None]] = {
     "UTILITY.AC.Pressure": {"low_warning": 6.0, "low_alarm": 5.0, "high_warning": 8.5, "high_alarm": 9.5},
     "UTILITY.AC.Power_kW": {"high_warning": 32, "high_alarm": 35},
 
-    "UTILITY.AIRHDR.DewPoint": {"high_warning": -5, "high_alarm": 3},
+    # DewPoint deliberately has no threshold profile - removed per
+    # explicit request (2026-08-09), still simulated and viewable, just
+    # not alarmed on.
     "UTILITY.AIRHDR.Flow": {"low_warning": 20, "high_warning": 140},
     "UTILITY.AIRHDR.Pressure": {"low_warning": 5.5, "low_alarm": 5.0, "high_warning": 7.5, "high_alarm": 8.0},
 
