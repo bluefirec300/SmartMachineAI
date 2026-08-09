@@ -66,6 +66,7 @@ STOPWORDS = {
     "why","when","where","how","does","do","will","would","can","could",
     "it","its","this","that","be","been","being",
     "trend","limit","trip",
+    "there","anything","happen","happened","wrong","any",
 }
 
 def normalize(value: object) -> str:
@@ -92,9 +93,34 @@ class ConceptExtractor:
             raise ValueError("Question cannot be empty.")
         text = normalize(question)
 
-        if any(contains(text, p) for p in ("why did", "why is", "what caused", "root cause")):
+        discovery_words = set(text.split())
+        discovery_targets = {
+            "component", "components", "equipment", "tag", "tags",
+        }
+
+        if (
+            "available" in discovery_words
+            or "monitor" in discovery_words
+            or (
+                discovery_words & {"list", "show"}
+                and discovery_words & discovery_targets
+            )
+            or any(
+                contains(text, p)
+                for p in ("what can i check", "what can i ask", "help")
+            )
+        ):
+            intent = "discovery"
+        elif any(contains(text, p) for p in ("why did", "why is", "what caused", "root cause")):
             intent = "root_cause"
-        elif any(contains(text, p) for p in ("alarm history", "event history", "when did", "timeline")):
+        elif any(
+            contains(text, p)
+            for p in (
+                "alarm history", "event history", "when did", "timeline",
+                "anything happen", "what happened", "any events", "any alarms",
+                "anything wrong",
+            )
+        ):
             intent = "timeline"
         elif any(contains(text, p) for p in ("trend", "over time", "increasing", "decreasing", "history of")):
             intent = "trend"

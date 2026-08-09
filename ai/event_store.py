@@ -359,6 +359,8 @@ class EventStore:
         equipment: str | None = None,
         tag: str | None = None,
         severity: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
     ) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -388,6 +390,22 @@ class EventStore:
             )
             parameters.append(
                 severity.strip().lower()
+            )
+
+        if start_time:
+            conditions.append(
+                "event_time >= ?"
+            )
+            parameters.append(
+                start_time
+            )
+
+        if end_time:
+            conditions.append(
+                "event_time <= ?"
+            )
+            parameters.append(
+                end_time
             )
 
         where_clause = ""

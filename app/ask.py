@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import re
+import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from ai.ai_provider import AIProvider
@@ -35,6 +38,155 @@ THRESHOLD_LABELS = (
     "high_warning",
     "high_alarm",
 )
+
+FACTORY_WIDE_EVENTS_LIMIT = 30
+
+TIME_RANGE_LABELS = {
+    "yesterday": "yesterday",
+    "today": "today",
+    "last_7_days": "in the last 7 days",
+    "last_hour": "in the last hour",
+    "last_30_minutes": "in the last 30 minutes",
+}
+
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _factory_timeline_range(time_expression):
+    """
+    Convert a time_expression (from ConceptExtractor.TIMES) into an
+    actual (start, end, label) window for querying machine_events.
+
+    Uses the same space-separated timestamp format as database.py -
+    machine_events.event_time is written in that format, and a
+    mismatched separator would silently break the comparison the
+    same way it did for plc_data earlier this session.
+    """
+    now = datetime.now()
+
+    if time_expression == "yesterday":
+        start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = start_of_today - timedelta(days=1)
+        end = start_of_today - timedelta(seconds=1)
+    elif time_expression == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+    elif time_expression == "last_7_days":
+        start = now - timedelta(days=7)
+        end = now
+    elif time_expression == "last_hour":
+        start = now - timedelta(hours=1)
+        end = now
+    elif time_expression == "last_30_minutes":
+        start = now - timedelta(minutes=30)
+        end = now
+    else:
+        start = now - timedelta(hours=24)
+        end = now
+
+    label = TIME_RANGE_LABELS.get(time_expression, "in the last 24 hours")
+
+    return start.strftime(TIMESTAMP_FORMAT), end.strftime(TIMESTAMP_FORMAT), label
+
+
+def _format_factory_wide_events(events, label):
+    """
+    Render a factory-wide (not tag-specific) event summary.
+
+    Used when a timeline question doesn't name a specific tag/
+    equipment ("is there anything happen yesterday") - the normal
+    tag resolver has nothing to resolve to, so this queries
+    machine_events across everything instead of failing outright.
+    """
+    if not events:
+        return f"No alarm or warning events were recorded {label}."
+
+    lines = [
+        f"Alarm/warning events {label} "
+        f"({len(events)} shown, most recent first):"
+    ]
+
+    for event in events:
+        value_text = ""
+
+        if event.get("value") is not None:
+            value_text = f" {format_number(event['value'])}"
+
+            if event.get("unit"):
+                value_text += f" {event['unit']}"
+
+        lines.append(
+            f"- {event['event_time']} | {event['equipment']} | "
+            f"{event['tag']} | [{event['severity'].upper()}] "
+            f"{event['condition']}{value_text}"
+        )
+
+    return "\n".join(lines)
+
+
+def _equipment_type_key(equipment_name):
+    """
+    Group numbered equipment instances by type.
+
+    e.g. "p01_air_compressor_ac01" -> "p01_air_compressor", so "Air
+    Compressor 1/2/3" collapse into one summary line instead of
+    three, the same way an operator would think about it.
+    """
+    match = re.match(r"^(p\d+_.+)_[a-z]+\d+$", equipment_name)
+    return match.group(1) if match else equipment_name
+
+
+def _format_available_equipment(rows):
+    """
+    Render a deterministic "what can I ask about" summary.
+
+    Not routed through the LLM - this is a structured listing
+    straight from configuration, not something that benefits from
+    (or should risk) paraphrasing.
+    """
+    if not rows:
+        return "No equipment is currently configured/enabled."
+
+    groups: dict[str, list] = {}
+
+    for row in rows:
+        key = _equipment_type_key(row["name"])
+        groups.setdefault(key, []).append(row)
+
+    total_equipment = len(rows)
+    total_tags = sum(row["tag_count"] for row in rows)
+
+    lines = [
+        f"This system currently monitors {total_equipment} pieces of "
+        f"equipment ({total_tags} tags total):",
+        "",
+    ]
+
+    for _, group_rows in sorted(groups.items()):
+        if len(group_rows) == 1:
+            row = group_rows[0]
+            lines.append(f"- {row['display_name']} ({row['tag_count']} tags)")
+        else:
+            names = ", ".join(row["display_name"] for row in group_rows)
+            lines.append(
+                f"- {len(group_rows)}x similar units "
+                f"(~{group_rows[0]['tag_count']} tags each): {names}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "You can ask things like:",
+            '- "what is the compressor pressure" (current value)',
+            '- "what is the trend of the compressor pressure" (trend)',
+            '- "what is the compressor pressure alarm limit" (threshold)',
+            '- "why is the compressor pressure dropping" (root cause)',
+            '- "when did the compressor pressure alarm trip" (history for one tag)',
+            '- "is there anything happen yesterday" (factory-wide summary)',
+        ]
+    )
+
+    return "\n".join(lines)
 
 
 def _condense_evidence(evidence):
@@ -142,6 +294,8 @@ class AskEngine:
         config_database_path: str | Path = CONFIG_DATABASE_PATH,
         machine_database_path: str | Path = MACHINE_DATABASE_PATH,
     ) -> None:
+        self.config_database_path = Path(config_database_path)
+
         self.query_engine = IndustrialQueryEngine(
             database_path=config_database_path,
         )
@@ -203,9 +357,48 @@ class AskEngine:
             ]
         )
 
+    def _list_available_equipment(self) -> str:
+        connection = sqlite3.connect(self.config_database_path)
+        connection.row_factory = sqlite3.Row
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT e.name, e.display_name, COUNT(t.id) AS tag_count
+                FROM equipment e
+                JOIN tags t ON t.equipment_id = e.id AND t.enabled = 1
+                GROUP BY e.id
+                HAVING tag_count > 0
+                ORDER BY e.display_name
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+
+        return _format_available_equipment(rows)
+
+    def _factory_wide_timeline(self, time_expression: str) -> str:
+        start, end, label = _factory_timeline_range(time_expression)
+
+        events = self.event_store.get_recent_events(
+            limit=FACTORY_WIDE_EVENTS_LIMIT,
+            start_time=start,
+            end_time=end,
+        )
+
+        return _format_factory_wide_events(events, label)
+
     def ask(self, question: str) -> str:
         """Answer one operator question and return the final text."""
         result = self.query_engine.query(question)
+
+        if result.intent == "discovery":
+            return self._list_available_equipment()
+
+        if result.intent == "timeline" and (
+            result.status != "resolved" or not result.selected_tag
+        ):
+            return self._factory_wide_timeline(result.time_expression)
 
         if result.status != "resolved" or not result.selected_tag:
             return result.message
