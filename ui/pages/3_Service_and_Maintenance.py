@@ -141,6 +141,10 @@ def _new_service_dialog(equipment_options: dict) -> None:
                 description=report.strip(),
                 performed_at=performed_at.isoformat(),
             )
+            # A service visit bumps last_serviced_at, which can change
+            # the computed due date (see _next_due) - clear any stale
+            # "Ignore" so Upcoming & Overdue reflects the update.
+            st.session_state["ignored_overdue"].discard(selected_equipment["id"])
             st.rerun()
 
 
@@ -278,6 +282,11 @@ with maintenance_tab:
                 performed_by=performed_by.strip() or None,
                 next_due_at=next_due_input.isoformat() if next_due_input else None,
             )
+            # New work logged means whatever schedule state this
+            # equipment had before (including a prior "Ignore") is
+            # stale - let it reappear in Upcoming & Overdue reflecting
+            # the just-logged update.
+            st.session_state["ignored_overdue"].discard(selected_equipment["id"])
             st.success(f"Logged {category.lower()} for {selected_equipment['display_name']}.")
             st.rerun()
 
