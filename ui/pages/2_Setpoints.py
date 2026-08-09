@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.configuration_manager import ConfigurationManager
+from simulator.tag_dataset_model import MONOTONIC_UNITS
 from ui.data_access import CONFIG_DATABASE_PATH, get_enabled_tags
 
 
@@ -39,12 +40,28 @@ def _get_config_manager() -> ConfigurationManager:
 
 config_manager = _get_config_manager()
 
-# Only continuous/countable measurements make sense as a low/high
-# threshold - BOOL is a true/false state (e.g. "door open") with no
-# range to be inside or outside of, and STRING can't be compared
-# numerically at all. REAL and INT (e.g. compressor start counts) are
-# both legitimate to threshold.
-all_tags = [tag for tag in get_enabled_tags() if tag["data_type"] in ("REAL", "INT")]
+# Only a continuous process measurement makes sense as a low/high
+# threshold. Excluded even though numeric:
+#   - BOOL - a true/false state (e.g. "door open"), no range to be
+#     inside/outside of. STRING can't be compared numerically at all.
+#   - Cumulative totals (unit in MONOTONIC_UNITS: kWh/h/m3) - only
+#     ever increase, so a fixed threshold would trip once and then
+#     stay tripped forever. Covers "*Hours" runtime counters and
+#     "*Energy_kWh"/"*.Total" running totals.
+#   - "*StartCount" - also only ever increases in this simulator (an
+#     INT count, never a rate), same problem as the totals above.
+#   - "*.Setpoint" - a control target the operator/PLC dials in (e.g.
+#     "cold room setpoint"), not a measured process variable.
+# All of these stay visible on Live Data, just not offered here.
+EXCLUDED_SUFFIXES = ("Setpoint", "StartCount")
+
+all_tags = [
+    tag
+    for tag in get_enabled_tags()
+    if tag["data_type"] == "REAL"
+    and tag["unit"] not in MONOTONIC_UNITS
+    and not tag["tag_name"].endswith(EXCLUDED_SUFFIXES)
+]
 
 if not all_tags:
     st.info("No numeric tags are currently enabled.")

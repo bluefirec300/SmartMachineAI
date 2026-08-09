@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,103 @@ UNIT_PROFILES: dict[str, dict[str, float]] = {
 DEFAULT_PROFILE = {"low": 10, "high": 50, "noise": 0.5, "revert": 0.05}
 
 MONOTONIC_UNITS = {"kWh", "h", "m³"}
+
+# Per-signal normal operating bands, keyed by canonical_key(tag_name) -
+# see that function. Unlike UNIT_PROFILES (generic per unit, so every
+# "°C" tag shared one band regardless of what it actually measured), a
+# cold room and a compressor discharge temperature now get realistic,
+# distinct ranges. noise/revert are carried over from the unit-level
+# defaults above (same feel, just centred on a real-world band) rather
+# than hand-tuned per tag. Falls back to UNIT_PROFILES for anything not
+# listed here (e.g. tags added by a future migration phase), so this is
+# additive/safe to extend, never a hard requirement.
+TAG_PROFILES: dict[str, dict[str, float]] = {
+    # Cold Room (Bitzer 4VES-6Y refrigeration unit)
+    "COLDROOM.CR.RoomTemp": {"low": 2, "high": 6, "noise": 0.3, "revert": 0.05},
+    "COLDROOM.CR.Humidity": {"low": 50, "high": 70, "noise": 0.4, "revert": 0.05},
+    "COLDROOM.CR.CompressorPower": {"low": 3, "high": 6, "noise": 0.5, "revert": 0.05},
+    # Building/factory electrical incomers (Schneider Masterpact MTZ2 / PowerLogic)
+    "ELEC.INCOMER.PF": {"low": 0.90, "high": 0.98, "noise": 0.005, "revert": 0.05},
+    "ELEC.INCOMER.Power_kW": {"low": 20, "high": 50, "noise": 0.5, "revert": 0.05},
+    "ELEC.MAIN.Current_L1": {"low": 15, "high": 25, "noise": 0.3, "revert": 0.05},
+    "ELEC.MAIN.Current_L2": {"low": 15, "high": 25, "noise": 0.3, "revert": 0.05},
+    "ELEC.MAIN.Current_L3": {"low": 15, "high": 25, "noise": 0.3, "revert": 0.05},
+    "ELEC.MAIN.Frequency": {"low": 49.5, "high": 50.5, "noise": 0.05, "revert": 0.1},
+    "ELEC.MAIN.PF": {"low": 0.90, "high": 0.98, "noise": 0.005, "revert": 0.05},
+    "ELEC.MAIN.Power_kW": {"low": 20, "high": 35, "noise": 0.5, "revert": 0.05},
+    "ELEC.MAIN.THD_I": {"low": 2, "high": 5, "noise": 0.2, "revert": 0.05},
+    "ELEC.MAIN.THD_V": {"low": 1, "high": 3, "noise": 0.2, "revert": 0.05},
+    "ELEC.MAIN.Voltage_L1L2": {"low": 390, "high": 410, "noise": 0.5, "revert": 0.05},
+    "ELEC.MAIN.Voltage_L2L3": {"low": 390, "high": 410, "noise": 0.5, "revert": 0.05},
+    "ELEC.MAIN.Voltage_L3L1": {"low": 390, "high": 410, "noise": 0.5, "revert": 0.05},
+    # Outdoor ambient sensor
+    "ENV.Temperature": {"low": 24, "high": 34, "noise": 0.3, "revert": 0.05},
+    "ENV.Humidity": {"low": 60, "high": 90, "noise": 0.4, "revert": 0.05},
+    # MCC (electrical) room environment
+    "MCCROOM.ENV.Temperature": {"low": 24, "high": 32, "noise": 0.3, "revert": 0.05},
+    "MCCROOM.ENV.Humidity": {"low": 40, "high": 55, "noise": 0.4, "revert": 0.05},
+    # Air Compressor (Atlas Copco GA30+)
+    "UTILITY.AC.OutletTemp": {"low": 75, "high": 95, "noise": 0.3, "revert": 0.05},
+    "UTILITY.AC.Pressure": {"low": 6.5, "high": 8.0, "noise": 0.05, "revert": 0.05},
+    "UTILITY.AC.Power_kW": {"low": 22, "high": 30, "noise": 0.5, "revert": 0.05},
+    # Compressed-air header
+    "UTILITY.AIRHDR.DewPoint": {"low": -25, "high": -10, "noise": 0.3, "revert": 0.05},
+    "UTILITY.AIRHDR.Flow": {"low": 60, "high": 100, "noise": 1.0, "revert": 0.05},
+    "UTILITY.AIRHDR.Pressure": {"low": 6.0, "high": 7.0, "noise": 0.05, "revert": 0.05},
+    # Chiller (Daikin EWAD240)
+    "UTILITY.CHL.SupplyTemp": {"low": 5.5, "high": 7.5, "noise": 0.3, "revert": 0.05},
+    "UTILITY.CHL.ReturnTemp": {"low": 11, "high": 14, "noise": 0.3, "revert": 0.05},
+    "UTILITY.CHL.Power_kW": {"low": 50, "high": 90, "noise": 0.5, "revert": 0.05},
+    "UTILITY.CHL.LoadPct": {"low": 40, "high": 90, "noise": 0.5, "revert": 0.05},
+    "UTILITY.CHL.WaterFlow": {"low": 45, "high": 65, "noise": 1.0, "revert": 0.05},
+    # Chilled Water Pump
+    "UTILITY.CHWP.BearingTemp": {"low": 30, "high": 50, "noise": 0.3, "revert": 0.05},
+    "UTILITY.CHWP.Current": {"low": 15, "high": 25, "noise": 0.3, "revert": 0.05},
+    "UTILITY.CHWP.DischargePressure": {"low": 3.5, "high": 5.0, "noise": 0.05, "revert": 0.05},
+    "UTILITY.CHWP.SuctionPressure": {"low": 3.0, "high": 4.5, "noise": 0.05, "revert": 0.05},
+    "UTILITY.CHWP.Flow": {"low": 25, "high": 50, "noise": 1.0, "revert": 0.05},
+    "UTILITY.CHWP.Frequency": {"low": 45, "high": 52, "noise": 0.05, "revert": 0.1},
+    "UTILITY.CHWP.Power_kW": {"low": 10, "high": 20, "noise": 0.5, "revert": 0.05},
+    "UTILITY.CHWP.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+    # Building Water Meter (Sensus iPERL)
+    "WATER.MTR.Flow": {"low": 15, "high": 40, "noise": 1.0, "revert": 0.05},
+    # Water distribution system
+    "WATER.SYS.HeaderPressure": {"low": 4.5, "high": 6.0, "noise": 0.05, "revert": 0.05},
+    "WATER.SYS.TankLevel": {"low": 30, "high": 85, "noise": 0.5, "revert": 0.05},
+    # Water Supply Pump (smaller than the chilled water pumps)
+    "WATER.WSP.BearingTemp": {"low": 30, "high": 50, "noise": 0.3, "revert": 0.05},
+    "WATER.WSP.Current": {"low": 8, "high": 15, "noise": 0.3, "revert": 0.05},
+    "WATER.WSP.DischargePressure": {"low": 3.5, "high": 5.0, "noise": 0.05, "revert": 0.05},
+    "WATER.WSP.SuctionPressure": {"low": 3.0, "high": 4.5, "noise": 0.05, "revert": 0.05},
+    "WATER.WSP.Flow": {"low": 20, "high": 40, "noise": 1.0, "revert": 0.05},
+    "WATER.WSP.Frequency": {"low": 45, "high": 52, "noise": 0.05, "revert": 0.1},
+    "WATER.WSP.Power_kW": {"low": 8, "high": 18, "noise": 0.5, "revert": 0.05},
+    "WATER.WSP.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+}
+
+
+def canonical_key(tag_name: str) -> str:
+    """
+    Strip the plant prefix (P01/P02) and instance numbers from a tag
+    name, keeping the equipment-type code and signal name - e.g.
+    "P01.UTILITY.AC01.OutletTemp" -> "UTILITY.AC.OutletTemp". This
+    lets every instance of the same equipment type (AC01/AC02/AC03,
+    or the same equipment once P02 is phased in) share one realistic
+    profile instead of needing one entry per instance. The final
+    token (the signal name, e.g. "Current_L1") is left untouched so
+    per-phase signals like L1/L2/L3 stay distinct.
+    """
+    tokens = tag_name.split(".")[1:]
+
+    if not tokens:
+        return tag_name
+
+    stripped = [
+        re.sub(r"\d+$", "", token) if index < len(tokens) - 1 else token
+        for index, token in enumerate(tokens)
+    ]
+
+    return ".".join(stripped)
 
 FAULT_DIRECTION_DOWN = {"pressure", "flow", "level"}
 
@@ -163,7 +261,12 @@ class TagDatasetSimulator:
         return ".".join(parts[:-1]) if len(parts) >= 2 else tag_name
 
     @staticmethod
-    def _profile(unit: str) -> dict[str, float]:
+    def _profile(tag_name: str, unit: str) -> dict[str, float]:
+        tag_profile = TAG_PROFILES.get(canonical_key(tag_name))
+
+        if tag_profile is not None:
+            return tag_profile
+
         return UNIT_PROFILES.get(unit, DEFAULT_PROFILE)
 
     def _initialize_state(self) -> None:
@@ -196,7 +299,7 @@ class TagDatasetSimulator:
         if unit in MONOTONIC_UNITS:
             return round(seed_rng.uniform(0, 1000), 1)
 
-        profile = self._profile(unit)
+        profile = self._profile(tag["tag_name"], unit)
         return round(seed_rng.uniform(profile["low"], profile["high"]), 2)
 
     def _update_real(
@@ -211,7 +314,7 @@ class TagDatasetSimulator:
             increment = self._rng.uniform(0.001, 0.05)
             return round(current + increment, 3)
 
-        profile = self._profile(unit)
+        profile = self._profile(tag["tag_name"], unit)
         baseline = (profile["low"] + profile["high"]) / 2
         band = profile["high"] - profile["low"]
 
