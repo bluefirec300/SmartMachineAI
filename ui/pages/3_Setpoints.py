@@ -12,8 +12,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.configuration_manager import ConfigurationManager
+from database.database import DatabaseManager
 from simulator.tag_dataset_model import MONOTONIC_UNITS
-from ui.data_access import CONFIG_DATABASE_PATH, get_enabled_tags
+from ui.data_access import CONFIG_DATABASE_PATH, MACHINE_DATABASE_PATH, get_enabled_tags
 
 
 st.set_page_config(page_title="Setpoints - SmartMachineAI", page_icon="⚙️", layout="wide")
@@ -72,15 +73,28 @@ selected_equipment = st.selectbox("Equipment", equipment_names)
 
 group_tags = [tag for tag in all_tags if tag["equipment_display_name"] == selected_equipment]
 thresholds_by_tag = {row["tag_name"]: row for row in config_manager.get_thresholds()}
+latest_readings = DatabaseManager(db_path=MACHINE_DATABASE_PATH).get_latest_all()
 
 st.divider()
 
 for tag in group_tags:
     existing = thresholds_by_tag.get(tag["tag_name"], {})
     unit_suffix = f" ({tag['unit']})" if tag["unit"] else ""
-    st.subheader(f"{tag['tag_name']}{unit_suffix}")
-    if tag["description"]:
-        st.caption(tag["description"])
+
+    header_col, live_col = st.columns([3, 1])
+
+    with header_col:
+        st.subheader(f"{tag['tag_name']}{unit_suffix}")
+        if tag["description"]:
+            st.caption(tag["description"])
+
+    with live_col:
+        reading = latest_readings.get(tag["tag_name"])
+        if reading is None:
+            st.metric("Current value", "no data")
+        else:
+            st.metric("Current value", f"{reading['value']:.2f} {tag['unit']}".strip())
+            st.caption(f"as of {reading['time']}")
 
     columns = st.columns(4)
     for column, parameter in zip(columns, PARAMETERS):

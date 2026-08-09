@@ -198,10 +198,15 @@ with maintenance_tab:
 
     schedule_rows.sort(key=lambda row: (STATUS_ORDER[row["status"]], row["due"] or date.max))
 
+    # Only genuinely actionable items belong here - equipment that's
+    # OK (comfortably scheduled) or NOT SCHEDULED (no due date at all
+    # yet) isn't upcoming or overdue, so it's noise in this view. Past
+    # work for everything still lives in Maintenance History below.
     schedule_rows = [
         row
         for row in schedule_rows
-        if row["equipment"]["id"] not in st.session_state["ignored_overdue"]
+        if row["status"] in ("OVERDUE", "DUE SOON")
+        and row["equipment"]["id"] not in st.session_state["ignored_overdue"]
     ]
 
     schedule_df = pd.DataFrame(
