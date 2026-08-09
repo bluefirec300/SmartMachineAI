@@ -53,6 +53,25 @@ def build_prompt(
     rule_context,
     route,
 ):
+    if route["intent"] == "root_cause":
+        structure_instructions = (
+            "Clearly separate:\n"
+            "1. Confirmed observations.\n"
+            "2. Possible engineering causes.\n"
+            "3. Recommended checks.\n\n"
+            'Base "Possible engineering causes" only on the supplied '
+            "root-cause evidence and probable contributing "
+            "conditions. Do not add a cause that isn't supported by "
+            "the supplied evidence."
+        )
+    else:
+        structure_instructions = (
+            "Answer using only the confirmed observations below.\n\n"
+            'Do not add a "possible causes" or "recommended checks" '
+            'section - the operator did not ask "why," so do not '
+            "speculate about causes."
+        )
+
     return f"""
 You are an industrial machine assistant.
 
@@ -67,10 +86,7 @@ historical values, trends, alarms or operating states.
 
 Do not invent sensor readings.
 
-Clearly separate:
-1. Confirmed observations.
-2. Possible engineering causes.
-3. Recommended checks.
+{structure_instructions}
 
 For a simple current-value question, answer directly and briefly.
 For a status or trend question, consider all supplied related tags.

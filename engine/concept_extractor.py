@@ -28,6 +28,10 @@ LOCATIONS = {
     "motor": ("motor",),
     "room": ("room",),
     "tank": ("tank",),
+    "bearing": ("bearing",),
+    "header": ("header",),
+    "incomer": ("incomer",),
+    "breaker": ("breaker",),
 }
 CONDITIONS = {
     "high": ("too high", "high"),
@@ -59,6 +63,9 @@ STOPWORDS = {
     "what","is","the","a","an","of","for","to","from","in","on","at",
     "show","me","please","tell","give","value","reading","currently",
     "current","latest","now","status","are","was","did","has","have",
+    "why","when","where","how","does","do","will","would","can","could",
+    "it","its","this","that","be","been","being",
+    "trend","limit","trip",
 }
 
 def normalize(value: object) -> str:

@@ -4,10 +4,11 @@ import argparse
 from pathlib import Path
 
 from ai.ai_provider import AIProvider
+from ai.event_store import EventStore
 from ai.prompt_builder import build_prompt, format_machine_context
 from ai.root_cause_engine import RootCauseEngine, format_root_cause_result
 from ai.rule_engine import RuleEngine, format_rule_results
-from ai.trend_analyzer import analyse_tag
+from ai.trend_analyzer import analyse_tag, format_number
 from database.database import DatabaseManager
 from engine.industrial_query_engine import IndustrialQueryEngine
 
@@ -26,6 +27,14 @@ HISTORY_HOURS_BY_INTENT = {
 
 DEFAULT_HISTORY_HOURS = 24
 DEFAULT_HISTORY_LIMIT = 2000
+RECENT_EVENTS_LIMIT = 10
+
+THRESHOLD_LABELS = (
+    "low_alarm",
+    "low_warning",
+    "high_warning",
+    "high_alarm",
+)
 
 
 def _condense_evidence(evidence):
@@ -49,6 +58,59 @@ def _condense_evidence(evidence):
         latest_by_key.values(),
         key=lambda item: item.event_time,
     )
+
+
+def _format_configured_thresholds(tag, rules, unit):
+    """
+    Render the actual configured warning/alarm limits for a tag.
+
+    RuleEngine.evaluate_summary() only reports whether the current
+    value passes or fails those limits, not the limit values
+    themselves - a "what is the alarm limit" question needs the raw
+    numbers, which this pulls straight from RuleEngine.rules.
+    """
+    if not rules:
+        return f"No engineering thresholds are configured for {tag}."
+
+    unit_suffix = f" {unit}" if unit else ""
+
+    parts = [
+        f"{label.replace('_', ' ')} {format_number(rules[label])}{unit_suffix}"
+        for label in THRESHOLD_LABELS
+        if label in rules
+    ]
+
+    return f"Configured thresholds for {tag}: " + ", ".join(parts) + "."
+
+
+def _format_event_history(tag, events):
+    """
+    Render recorded alarm/warning history for a tag, oldest first.
+
+    Used for "timeline" questions ("when did X happen"), which need
+    actual machine_events records rather than the plc_data trend
+    summary used by current/trend/threshold questions.
+    """
+    if not events:
+        return f"No recorded alarm/warning history is available for {tag}."
+
+    lines = [f"Recent alarm/warning history for {tag}:"]
+
+    for event in reversed(events):
+        value_text = ""
+
+        if event.get("value") is not None:
+            value_text = f" {format_number(event['value'])}"
+
+            if event.get("unit"):
+                value_text += f" {event['unit']}"
+
+        lines.append(
+            f"- {event['event_time']} [{event['severity'].upper()}] "
+            f"{event['condition']}{value_text}"
+        )
+
+    return "\n".join(lines)
 
 
 class AskEngine:
@@ -93,6 +155,10 @@ class AskEngine:
         )
 
         self.root_cause_engine = RootCauseEngine(
+            database_path=machine_database_path,
+        )
+
+        self.event_store = EventStore(
             database_path=machine_database_path,
         )
 
@@ -184,6 +250,27 @@ class AskEngine:
             machine_context = (
                 f"{machine_context}\n\n"
                 f"{format_root_cause_result(root_cause_result)}"
+            )
+
+        if result.intent == "threshold":
+            configured_thresholds = self.rule_engine.rules.get(
+                result.selected_tag
+            )
+
+            rule_context = (
+                f"{rule_context}\n\n"
+                f"{_format_configured_thresholds(result.selected_tag, configured_thresholds, summary['unit'])}"
+            )
+
+        if result.intent == "timeline":
+            recent_events = self.event_store.get_recent_events(
+                tag=result.selected_tag,
+                limit=RECENT_EVENTS_LIMIT,
+            )
+
+            machine_context = (
+                f"{machine_context}\n\n"
+                f"{_format_event_history(result.selected_tag, recent_events)}"
             )
 
         route = {
