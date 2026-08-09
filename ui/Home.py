@@ -29,6 +29,8 @@ Use the pages in the sidebar:
 - **Setpoints** - view/edit the low/high warning and alarm limits.
 - **Maintenance** - upcoming/overdue maintenance and a log of past
   work.
+- **Ask AI** - ask questions in plain English ("why is the compressor
+  pressure dropping") without needing the terminal.
 
 This shows whatever is currently **enabled** in `database/config.db`
 - as more of the P01/P02/Phase 2/3 tag dataset gets enabled
