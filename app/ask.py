@@ -124,6 +124,35 @@ def _format_factory_wide_events(events, label):
     return "\n".join(lines)
 
 
+def _format_candidate_menu(candidates, status):
+    """
+    Render a numbered "which one did you mean" menu.
+
+    status distinguishes "found several good matches, pick one"
+    (clarification_required) from "nothing matched confidently, here
+    are the closest guesses" (no_match) - the wording is honest about
+    which situation the operator is in.
+    """
+    if status == "clarification_required":
+        header = "I found more than one possible match. Which one did you mean?"
+    else:
+        header = (
+            "I couldn't confidently match that to a configured tag. "
+            "Closest matches I found:"
+        )
+
+    lines = [header, ""]
+
+    for index, candidate in enumerate(candidates, start=1):
+        tag = candidate.tag
+        equipment_label = tag.equipment_display_name or tag.equipment_name or "Unknown equipment"
+        lines.append(f"{index}. {tag.tag_name} ({equipment_label})")
+
+    lines.extend(["", "Reply with a number, or ask a new question."])
+
+    return "\n".join(lines)
+
+
 def _equipment_type_key(equipment_name):
     """
     Group numbered equipment instances by type.
@@ -318,6 +347,13 @@ class AskEngine:
 
         self.ai_provider, self.ai_error = self._load_ai_provider()
 
+        # General pending-action state for the current conversation.
+        # Today this only holds a "select one of these candidates"
+        # menu, but the shape (a dict keyed by "kind") is meant to
+        # also carry a future "confirm this write" kind - e.g.
+        # confirming a threshold change - without a redesign later.
+        self._pending: dict | None = None
+
     @staticmethod
     def _load_ai_provider() -> tuple[AIProvider | None, str]:
         try:
@@ -388,39 +424,31 @@ class AskEngine:
 
         return _format_factory_wide_events(events, label)
 
-    def ask(self, question: str) -> str:
-        """Answer one operator question and return the final text."""
-        result = self.query_engine.query(question)
-
-        if result.intent == "discovery":
-            return self._list_available_equipment()
-
-        if result.intent == "timeline" and (
-            result.status != "resolved" or not result.selected_tag
-        ):
-            return self._factory_wide_timeline(result.time_expression)
-
-        if result.status != "resolved" or not result.selected_tag:
-            return result.message
-
+    def _answer_for_tag(
+        self,
+        tag_name: str,
+        equipment: str,
+        intent: str,
+        question: str,
+    ) -> str:
         history = self.database.get_history(
-            tag=result.selected_tag,
-            hours=self._history_hours(result.intent),
+            tag=tag_name,
+            hours=self._history_hours(intent),
             limit=DEFAULT_HISTORY_LIMIT,
         )
 
         if not history:
             return (
-                f"'{result.selected_tag}' was resolved, but no "
+                f"'{tag_name}' was resolved, but no "
                 "historian data has been recorded for it yet."
             )
 
-        summary = analyse_tag(result.selected_tag, history)
+        summary = analyse_tag(tag_name, history)
         rule_result = self.rule_engine.evaluate_summary(summary)
 
         machine_context = format_machine_context(
             [summary],
-            result.intent,
+            intent,
         )
 
         rule_context = format_rule_results(
@@ -428,11 +456,11 @@ class AskEngine:
             include_normal=True,
         )
 
-        if result.intent == "root_cause":
+        if intent == "root_cause":
             root_cause_result = (
                 self.root_cause_engine.analyze_latest_alarm(
-                    equipment=result.equipment or None,
-                    tag=result.selected_tag or None,
+                    equipment=equipment or None,
+                    tag=tag_name or None,
                 )
             )
 
@@ -445,30 +473,28 @@ class AskEngine:
                 f"{format_root_cause_result(root_cause_result)}"
             )
 
-        if result.intent == "threshold":
-            configured_thresholds = self.rule_engine.rules.get(
-                result.selected_tag
-            )
+        if intent == "threshold":
+            configured_thresholds = self.rule_engine.rules.get(tag_name)
 
             rule_context = (
                 f"{rule_context}\n\n"
-                f"{_format_configured_thresholds(result.selected_tag, configured_thresholds, summary['unit'])}"
+                f"{_format_configured_thresholds(tag_name, configured_thresholds, summary['unit'])}"
             )
 
-        if result.intent == "timeline":
+        if intent == "timeline":
             recent_events = self.event_store.get_recent_events(
-                tag=result.selected_tag,
+                tag=tag_name,
                 limit=RECENT_EVENTS_LIMIT,
             )
 
             machine_context = (
                 f"{machine_context}\n\n"
-                f"{_format_event_history(result.selected_tag, recent_events)}"
+                f"{_format_event_history(tag_name, recent_events)}"
             )
 
         route = {
-            "equipment": result.equipment or "Unknown",
-            "intent": result.intent,
+            "equipment": equipment or "Unknown",
+            "intent": intent,
         }
 
         prompt = build_prompt(
@@ -493,6 +519,69 @@ class AskEngine:
                 rule_context,
                 str(error),
             )
+
+    def ask(self, question: str) -> str:
+        """Answer one operator question and return the final text."""
+        stripped_question = question.strip()
+
+        if self._pending and self._pending["kind"] == "select_candidate":
+            if stripped_question.isdigit():
+                candidates = self._pending["candidates"]
+                index = int(stripped_question)
+
+                if 1 <= index <= len(candidates):
+                    tag = candidates[index - 1].tag
+                    intent = self._pending["intent"]
+                    original_question = self._pending["question"]
+                    self._pending = None
+
+                    return self._answer_for_tag(
+                        tag.tag_name,
+                        tag.equipment_name,
+                        intent,
+                        original_question,
+                    )
+
+                return (
+                    f"Please reply with a number between 1 and "
+                    f"{len(candidates)}, or ask a new question."
+                )
+
+            # Anything other than a bare number abandons the pending
+            # menu - treat it as a fresh question instead.
+            self._pending = None
+
+        result = self.query_engine.query(question)
+
+        if result.intent == "discovery":
+            return self._list_available_equipment()
+
+        if result.intent == "timeline" and (
+            result.status != "resolved" or not result.selected_tag
+        ):
+            return self._factory_wide_timeline(result.time_expression)
+
+        if result.status != "resolved" or not result.selected_tag:
+            candidates = result.candidates[:5]
+
+            if not candidates:
+                return result.message
+
+            self._pending = {
+                "kind": "select_candidate",
+                "candidates": candidates,
+                "intent": result.intent,
+                "question": result.question,
+            }
+
+            return _format_candidate_menu(candidates, result.status)
+
+        return self._answer_for_tag(
+            result.selected_tag,
+            result.equipment,
+            result.intent,
+            question,
+        )
 
 
 def main() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+from difflib import SequenceMatcher
 from .models import Concepts
 
 MEASUREMENTS = {
@@ -69,12 +70,67 @@ STOPWORDS = {
     "there","anything","happen","happened","wrong","any",
 }
 
+DISCOVERY_TARGETS = {
+    "component", "components", "equipment", "equipments",
+    "tag", "tags", "sensor", "sensors", "device", "devices",
+    "instrument", "instruments", "asset", "assets", "machine",
+    "machines",
+}
+
+DISCOVERY_TRIGGER_WORDS = {"available", "monitor", "list", "show", "help"}
+
+# Every word this pipeline actually recognizes - used to spell-correct
+# typos before any matching happens. Equipment/tag names have their
+# own separate fuzzy-matching path (engine.industrial_query_engine);
+# this only covers the fixed vocabulary below (intent keywords,
+# measurement/location/condition/event/time words, stopwords).
+VOCABULARY_WORDS = set(STOPWORDS) | DISCOVERY_TARGETS | DISCOVERY_TRIGGER_WORDS
+
+for _mapping in (MEASUREMENTS, LOCATIONS, CONDITIONS, EVENTS, TIMES):
+    for _aliases in _mapping.values():
+        for _alias in _aliases:
+            VOCABULARY_WORDS.update(_alias.replace("_", " ").split())
+
 def normalize(value: object) -> str:
     text = str(value or "").strip()
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     text = text.replace("_", " ").replace("-", " ").lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+def _correct_word(word: str) -> str:
+    """
+    Spell-correct one word against the known vocabulary.
+
+    Skips words that are already correct, too short to correct
+    reliably, or contain a digit (likely a tag/instance code like
+    "cr01", which must never be "corrected" into something else).
+    """
+    if len(word) <= 1 or word in VOCABULARY_WORDS or any(ch.isdigit() for ch in word):
+        return word
+
+    best_word = word
+    best_ratio = 0.0
+
+    for candidate in VOCABULARY_WORDS:
+        if abs(len(candidate) - len(word)) > 2:
+            continue
+
+        ratio = SequenceMatcher(None, word, candidate).ratio()
+
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_word = candidate
+
+    # Short words naturally score lower ratios for the same one-letter
+    # edit ("wy" -> "why" is only 0.80), so the bar is lower for them -
+    # still conservative enough to avoid miscorrecting real short words.
+    threshold = 0.82 if len(word) > 4 else 0.72
+
+    return best_word if best_ratio >= threshold else word
+
+def correct_spelling(text: str) -> str:
+    return " ".join(_correct_word(word) for word in text.split())
 
 def contains(text: str, phrase: str) -> bool:
     return f" {normalize(phrase)} " in f" {normalize(text)} "
@@ -91,19 +147,16 @@ class ConceptExtractor:
         question = str(question or "").strip()
         if not question:
             raise ValueError("Question cannot be empty.")
-        text = normalize(question)
+        text = correct_spelling(normalize(question))
 
         discovery_words = set(text.split())
-        discovery_targets = {
-            "component", "components", "equipment", "tag", "tags",
-        }
 
         if (
             "available" in discovery_words
             or "monitor" in discovery_words
             or (
                 discovery_words & {"list", "show"}
-                and discovery_words & discovery_targets
+                and discovery_words & DISCOVERY_TARGETS
             )
             or any(
                 contains(text, p)
