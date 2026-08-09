@@ -26,6 +26,10 @@ database/*.sqlite3
 *.db-shm
 *.db-wal
 
+# Vendor manuals/datasheets - proprietary documents, not project source
+manuals/*
+!manuals/.gitkeep
+
 # Local configuration and secrets
 .env
 .env.*
