@@ -178,3 +178,74 @@ def get_maintenance_history(equipment_id: int | None = None) -> list[dict[str, A
         connection.close()
 
     return [dict(row) for row in rows]
+
+
+def add_service_entry(
+    equipment_id: int,
+    person_in_charge: str | None,
+    description: str,
+    performed_at: str,
+) -> None:
+    """
+    Records a one-off service entry. Unlike maintenance_log, this has
+    no next_due_at / schedule concept - service records are just a
+    log for future recall, not something that drives the upcoming/
+    overdue view. Still bumps equipment.last_serviced_at, since a
+    service visit genuinely counts as "serviced" for schedule purposes.
+    """
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.execute("PRAGMA foreign_keys = ON")
+
+    try:
+        connection.execute(
+            """
+            INSERT INTO service_log (
+                equipment_id, person_in_charge, description, performed_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                equipment_id,
+                person_in_charge,
+                description,
+                performed_at,
+                datetime.utcnow().isoformat(timespec="seconds"),
+            ),
+        )
+        connection.execute(
+            "UPDATE equipment SET last_serviced_at = ? WHERE id = ?",
+            (performed_at, equipment_id),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_service_history(equipment_id: int | None = None) -> list[dict[str, Any]]:
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+
+    query = """
+        SELECT
+            s.id, s.person_in_charge, s.description, s.performed_at, s.created_at,
+            e.display_name AS equipment_display_name
+        FROM service_log s
+        JOIN equipment e ON e.id = s.equipment_id
+    """
+    params: tuple[Any, ...] = ()
+
+    if equipment_id is not None:
+        query += " WHERE s.equipment_id = ?"
+        params = (equipment_id,)
+
+    query += " ORDER BY s.performed_at DESC, s.id DESC"
+
+    try:
+        rows = connection.execute(query, params).fetchall()
+    finally:
+        connection.close()
+
+    return [dict(row) for row in rows]

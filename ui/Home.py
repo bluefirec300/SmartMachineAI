@@ -27,8 +27,9 @@ Use the pages in the sidebar:
 - **Live Data** - current value of every enabled tag, grouped by
   equipment, with engineering-limit status.
 - **Setpoints** - view/edit the low/high warning and alarm limits.
-- **Maintenance** - upcoming/overdue maintenance and a log of past
-  work.
+- **Service & Maintenance** - two tabs: Service (one-off service
+  visits, no schedule) and Maintenance (upcoming/overdue tracking and
+  a log of past work).
 - **Ask AI** - ask questions in plain English ("why is the compressor
   pressure dropping") without needing the terminal.
 - **Event Records** - browse the full alarm/warning history, filterable
