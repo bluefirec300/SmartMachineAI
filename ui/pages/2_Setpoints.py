@@ -39,7 +39,12 @@ def _get_config_manager() -> ConfigurationManager:
 
 config_manager = _get_config_manager()
 
-all_tags = [tag for tag in get_enabled_tags() if tag["data_type"] != "STRING"]
+# Only continuous/countable measurements make sense as a low/high
+# threshold - BOOL is a true/false state (e.g. "door open") with no
+# range to be inside or outside of, and STRING can't be compared
+# numerically at all. REAL and INT (e.g. compressor start counts) are
+# both legitimate to threshold.
+all_tags = [tag for tag in get_enabled_tags() if tag["data_type"] in ("REAL", "INT")]
 
 if not all_tags:
     st.info("No numeric tags are currently enabled.")

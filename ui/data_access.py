@@ -129,6 +129,29 @@ def add_maintenance_entry(
         connection.close()
 
 
+def get_event_filter_options() -> dict[str, list[str]]:
+    """Distinct equipment/tag values seen in machine_events, for filter dropdowns."""
+    connection = sqlite3.connect(MACHINE_DATABASE_PATH)
+
+    try:
+        equipment = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT equipment FROM machine_events ORDER BY equipment"
+            ).fetchall()
+        ]
+        tags = [
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT tag FROM machine_events ORDER BY tag"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+
+    return {"equipment": equipment, "tags": tags}
+
+
 def get_maintenance_history(equipment_id: int | None = None) -> list[dict[str, Any]]:
     connection = sqlite3.connect(CONFIG_DATABASE_PATH)
     connection.row_factory = sqlite3.Row

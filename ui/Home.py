@@ -31,6 +31,8 @@ Use the pages in the sidebar:
   work.
 - **Ask AI** - ask questions in plain English ("why is the compressor
   pressure dropping") without needing the terminal.
+- **Event Records** - browse the full alarm/warning history, filterable
+  by severity, equipment, tag, and time range.
 
 This shows whatever is currently **enabled** in `database/config.db`
 - as more of the P01/P02/Phase 2/3 tag dataset gets enabled
