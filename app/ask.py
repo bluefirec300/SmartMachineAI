@@ -14,6 +14,7 @@ from ai.rule_engine import RuleEngine, format_rule_results
 from ai.trend_analyzer import analyse_tag, format_number
 from database.database import DatabaseManager
 from engine.industrial_query_engine import IndustrialQueryEngine
+from rag.retrieval import search_chunks
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -294,6 +295,29 @@ def _format_event_history(tag, events):
     return "\n".join(lines)
 
 
+def _format_documentation_excerpts(chunks, brand, model):
+    """
+    Render retrieved manufacturer-documentation excerpts.
+
+    Only called with non-empty chunks - the caller skips this
+    section entirely when nothing was found, so the LLM never sees a
+    "documentation" header with nothing behind it.
+    """
+    lines = [f"Manufacturer documentation ({brand} {model}):"]
+
+    for chunk in chunks:
+        lines.append(f"- ({chunk['source']}) {chunk['chunk_text']}")
+
+    lines.append(
+        "IMPORTANT: your \"Recommended checks\" must name the specific "
+        "components, part names, or procedures mentioned above (not "
+        "generic advice) wherever the documentation above covers the "
+        "current situation."
+    )
+
+    return "\n".join(lines)
+
+
 class AskEngine:
     """
     Orchestrates one operator question end-to-end.
@@ -413,6 +437,25 @@ class AskEngine:
 
         return _format_available_equipment(rows)
 
+    def _lookup_brand_model(self, equipment_name: str) -> tuple[str, str] | None:
+        if not equipment_name:
+            return None
+
+        connection = sqlite3.connect(self.config_database_path)
+
+        try:
+            row = connection.execute(
+                "SELECT brand, model FROM equipment WHERE name = ?",
+                (equipment_name,),
+            ).fetchone()
+        finally:
+            connection.close()
+
+        if not row or not row[0] or not row[1]:
+            return None
+
+        return row[0], row[1]
+
     def _factory_wide_timeline(self, time_expression: str) -> str:
         start, end, label = _factory_timeline_range(time_expression)
 
@@ -472,6 +515,34 @@ class AskEngine:
                 f"{machine_context}\n\n"
                 f"{format_root_cause_result(root_cause_result)}"
             )
+
+            brand_model = self._lookup_brand_model(equipment)
+
+            if brand_model:
+                brand, model = brand_model
+
+                documentation_query = " ".join(
+                    part
+                    for part in (
+                        tag_name,
+                        root_cause_result.alarm_condition,
+                        root_cause_result.alarm_message,
+                    )
+                    if part
+                )
+
+                chunks = search_chunks(
+                    brand,
+                    model,
+                    documentation_query,
+                    database_path=self.config_database_path,
+                )
+
+                if chunks:
+                    machine_context = (
+                        f"{machine_context}\n\n"
+                        f"{_format_documentation_excerpts(chunks, brand, model)}"
+                    )
 
         if intent == "threshold":
             configured_thresholds = self.rule_engine.rules.get(tag_name)

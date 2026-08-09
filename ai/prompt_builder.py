@@ -62,7 +62,13 @@ def build_prompt(
             'Base "Possible engineering causes" only on the supplied '
             "root-cause evidence and probable contributing "
             "conditions. Do not add a cause that isn't supported by "
-            "the supplied evidence."
+            "the supplied evidence.\n\n"
+            "If manufacturer documentation excerpts are supplied "
+            "below, prefer citing their specific guidance in "
+            '"Recommended checks" over generic advice - but only '
+            "what the excerpts actually say. Do not invent a "
+            "procedure or specification that isn't in the supplied "
+            "excerpts."
         )
     else:
         structure_instructions = (
