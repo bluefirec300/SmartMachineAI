@@ -1,3 +1,4 @@
 requests>=2.31,<3
 openai>=1.0
 pypdf>=4.0
+streamlit>=1.61
