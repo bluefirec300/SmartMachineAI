@@ -2,9 +2,11 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from config.environment import get_machine_db_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = PROJECT_ROOT / "database" / "machine_data.db"
+DB_PATH = get_machine_db_path()
 
 
 def get_machine_history(tags=None, limit=10):

@@ -1,7 +1,10 @@
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ai.equipment_knowledge import EquipmentKnowledge
+from config.environment import get_config_db_path
 
 
 EVENT_SEVERITIES = {
@@ -28,6 +31,7 @@ class EventEngine:
     def __init__(
         self,
         equipment_knowledge: EquipmentKnowledge | None = None,
+        database_path: str | Path | None = None,
     ):
         self.equipment_knowledge = (
             equipment_knowledge
@@ -38,6 +42,42 @@ class EventEngine:
         self.tag_equipment_map = (
             self._build_tag_equipment_map()
         )
+
+        # config/equipment_knowledge.json only ever described the
+        # original ~20-tag hand-scripted demo, retired 2026-08-09 - so
+        # for every tag in the current 313-tag P01/Phase2/3 dataset,
+        # the map above has no entry and get_equipment_for_tag() was
+        # silently falling back to the literal string "factory" for
+        # every single live event. This live DB lookup takes priority
+        # and covers the real dataset; the map above (and its
+        # "factory" fallback) still exists underneath for
+        # backward compatibility / injected test doubles.
+        self.database_path = (
+            Path(database_path) if database_path else get_config_db_path()
+        )
+        self._live_tag_equipment_map = (
+            self._build_live_tag_equipment_map()
+        )
+
+    def _build_live_tag_equipment_map(self) -> dict[str, str]:
+        if not self.database_path.exists():
+            return {}
+
+        connection = sqlite3.connect(self.database_path)
+
+        try:
+            rows = connection.execute(
+                """
+                SELECT tags.tag_name, equipment.display_name
+                FROM tags
+                LEFT JOIN equipment ON equipment.id = tags.equipment_id
+                WHERE tags.enabled = 1 AND equipment.display_name IS NOT NULL
+                """
+            ).fetchall()
+
+            return {row[0]: row[1] for row in rows}
+        finally:
+            connection.close()
 
     def _build_tag_equipment_map(
         self,
@@ -96,16 +136,26 @@ class EventEngine:
             self._build_tag_equipment_map()
         )
 
+        self._live_tag_equipment_map = (
+            self._build_live_tag_equipment_map()
+        )
+
     def get_equipment_for_tag(
         self,
         tag_name: str,
     ) -> str:
         """
-        Return the equipment associated with a tag.
-
-        Unknown tags are assigned to factory so historian data from
-        external or older configurations can still create events.
+        Return the equipment associated with a tag - the live
+        database (config.db's tags/equipment tables, the real,
+        current source of truth) first, then the legacy
+        equipment_knowledge map (JSON file or an injected test
+        double). Unknown tags are assigned to factory so historian
+        data from external or older configurations can still create
+        events.
         """
+        if tag_name in self._live_tag_equipment_map:
+            return self._live_tag_equipment_map[tag_name]
+
         return self.tag_equipment_map.get(
             tag_name,
             "factory",

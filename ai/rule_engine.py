@@ -5,6 +5,7 @@ from typing import Any
 from ai.trend_analyzer import format_number
 from config.configuration_manager import ConfigurationManager
 from config.configuration_service import get_configuration
+from config.environment import get_config_db_path
 from plc.tag_registry import TagRegistry
 
 
@@ -16,11 +17,7 @@ DEFAULT_RULES_PATH = (
     / "engineering_rules.json"
 )
 
-DEFAULT_DATABASE_PATH = (
-    PROJECT_ROOT
-    / "database"
-    / "config.db"
-)
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 
 class RuleEngine:
@@ -230,8 +227,8 @@ class RuleEngine:
                     "severity": "alarm",
                     "condition": "low_alarm",
                     "message": (
-                        f"{tag_name} is critically low "
-                        f"at {value_text}."
+                        f"{tag_name} is critically low at {value_text} "
+                        f"(low alarm limit: {self._value_text(low_alarm, unit)})."
                     ),
                 }
             )
@@ -245,8 +242,8 @@ class RuleEngine:
                     "severity": "alarm",
                     "condition": "high_alarm",
                     "message": (
-                        f"{tag_name} is critically high "
-                        f"at {value_text}."
+                        f"{tag_name} is critically high at {value_text} "
+                        f"(high alarm limit: {self._value_text(high_alarm, unit)})."
                     ),
                 }
             )
@@ -260,8 +257,8 @@ class RuleEngine:
                     "severity": "warning",
                     "condition": "low_warning",
                     "message": (
-                        f"{tag_name} is below its normal "
-                        f"range at {value_text}."
+                        f"{tag_name} is below its normal range at {value_text} "
+                        f"(low warning limit: {self._value_text(low_warning, unit)})."
                     ),
                 }
             )
@@ -275,8 +272,8 @@ class RuleEngine:
                     "severity": "warning",
                     "condition": "high_warning",
                     "message": (
-                        f"{tag_name} is above its normal "
-                        f"range at {value_text}."
+                        f"{tag_name} is above its normal range at {value_text} "
+                        f"(high warning limit: {self._value_text(high_warning, unit)})."
                     ),
                 }
             )

@@ -4,15 +4,15 @@ from pathlib import Path
 from typing import Any
 from difflib import SequenceMatcher
 
+from config.environment import get_config_db_path
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_KNOWLEDGE_PATH = (
     PROJECT_ROOT / "config" / "equipment_knowledge.json"
 )
 
-DEFAULT_DATABASE_PATH = (
-    PROJECT_ROOT / "database" / "config.db"
-)
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 
 class EquipmentKnowledge:

@@ -70,6 +70,16 @@ def build_prompt(
             "procedure or specification that isn't in the supplied "
             "excerpts."
         )
+    elif route["intent"] == "comparison":
+        structure_instructions = (
+            "Answer using only the confirmed observations below.\n\n"
+            "The comparison verdict (which period is higher or lower, "
+            "and by how much) has already been computed exactly in "
+            "code and is stated below as a CONFIRMED FACT. Restate it "
+            "in plain language only - do not recompute it, do not "
+            "second-guess it, and do not reverse which period you "
+            "call higher or lower."
+        )
     else:
         structure_instructions = (
             "Answer using only the confirmed observations below.\n\n"
