@@ -4,6 +4,7 @@ from typing import Any
 
 from config.configuration_manager import ConfigurationManager
 from config.configuration_service import get_configuration
+from config.environment import get_config_db_path
 
 
 class TagRegistry:
@@ -35,10 +36,17 @@ class TagRegistry:
             else project_root / "config" / "tag_registry.json"
         )
 
+        # Tracked separately from the resolved path below - decides
+        # whether _load_from_database() can use the shared cached
+        # ConfigurationService (only valid when nobody explicitly
+        # asked for a different database) or must build a one-off
+        # ConfigurationManager for the specific path given.
+        self._using_active_environment_default = database_path is None
+
         self.database_path = (
             Path(database_path)
             if database_path
-            else project_root / "database" / "config.db"
+            else get_config_db_path()
         )
 
         self.allow_json_fallback = allow_json_fallback
@@ -50,18 +58,21 @@ class TagRegistry:
         """
         Load tags from config.db.
 
-        If the database is unavailable or contains no tags, optionally
-        fall back to tag_registry.json.
+        If the database is unavailable (missing file, connection/read
+        error), optionally fall back to tag_registry.json. A database
+        that connects fine but genuinely has zero tags (e.g. a fresh
+        "actual" environment before any equipment/tags have been
+        configured) is a real, valid state - it must NOT fall back to
+        the JSON file, which still holds the old ~20-tag legacy demo
+        dataset and would otherwise resurrect it silently.
         """
         database_error: Exception | None = None
 
         try:
             tags = self._load_from_database()
-
-            if tags:
-                self.source = "database"
-                self._validate(tags)
-                return tags
+            self.source = "database"
+            self._validate(tags)
+            return tags
 
         except Exception as error:
             database_error = error
@@ -88,13 +99,7 @@ class TagRegistry:
                 f"Configuration database not found: {self.database_path}"
             )
 
-        default_database_path = (
-            Path(__file__).resolve().parent.parent
-            / "database"
-            / "config.db"
-        ).resolve()
-
-        if self.database_path.resolve() == default_database_path:
+        if self._using_active_environment_default:
             config = get_configuration()
         else:
             config = ConfigurationManager(
