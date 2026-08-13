@@ -1,4 +1,5 @@
 from __future__ import annotations
+from config.environment import get_config_db_path
 
 import random
 import re
@@ -10,7 +11,8 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 # Plausible generic value bands per unit. Not calibrated against real
 # equipment specs - this is illustrative simulation data, the same
@@ -33,7 +35,7 @@ UNIT_PROFILES: dict[str, dict[str, float]] = {
 
 DEFAULT_PROFILE = {"low": 10, "high": 50, "noise": 0.5, "revert": 0.05}
 
-MONOTONIC_UNITS = {"kWh", "h", "m³", "Nm³"}
+MONOTONIC_UNITS = {"kWh", "h", "m³", "Nm³", "L"}
 
 # Per-signal normal operating bands, keyed by canonical_key(tag_name) -
 # see that function. Unlike UNIT_PROFILES (generic per unit, so every
@@ -106,6 +108,129 @@ TAG_PROFILES: dict[str, dict[str, float]] = {
     "WATER.WSP.Frequency": {"low": 45, "high": 52, "noise": 0.05, "revert": 0.1},
     "WATER.WSP.Power_kW": {"low": 8, "high": 18, "noise": 0.5, "revert": 0.05},
     "WATER.WSP.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+
+    # --- Phase 2/3 (P01 tag-dataset expansion, 2026-08-10) ---
+
+    # Standby Diesel Generator (Cummins C1100D5)
+    "ELEC.GEN.BatteryVoltage": {"low": 24, "high": 28, "noise": 0.1, "revert": 0.05},
+    "ELEC.GEN.CoolantTemp": {"low": 80, "high": 95, "noise": 0.3, "revert": 0.05},
+    "ELEC.GEN.FuelLevel": {"low": 40, "high": 100, "noise": 0.3, "revert": 0.02},
+    "ELEC.GEN.Power_kW": {"low": 400, "high": 750, "noise": 3.0, "revert": 0.05},
+
+    # Dry-type Distribution Transformer (ABB)
+    "ELEC.TR.CurrentImbalance": {"low": 0.5, "high": 3.0, "noise": 0.1, "revert": 0.05},
+    "ELEC.TR.LoadPct": {"low": 30, "high": 70, "noise": 0.5, "revert": 0.05},
+    "ELEC.TR.THD": {"low": 1.0, "high": 4.0, "noise": 0.1, "revert": 0.05},
+    "ELEC.TR.Temperature": {"low": 60, "high": 90, "noise": 0.3, "revert": 0.05},
+
+    # AHU (Carrier 39CP/39M)
+    "HVAC.AHU.FanFrequency": {"low": 35, "high": 50, "noise": 0.1, "revert": 0.1},
+    "HVAC.AHU.FanPower": {"low": 5, "high": 15, "noise": 0.3, "revert": 0.05},
+    "HVAC.AHU.FilterDP": {"low": 50, "high": 150, "noise": 2.0, "revert": 0.05},
+    "HVAC.AHU.Humidity": {"low": 40, "high": 55, "noise": 0.4, "revert": 0.05},
+    "HVAC.AHU.ReturnAirTemp": {"low": 22, "high": 26, "noise": 0.2, "revert": 0.05},
+    "HVAC.AHU.SupplyAirTemp": {"low": 12, "high": 18, "noise": 0.2, "revert": 0.05},
+    "HVAC.AHU.ValvePosition": {"low": 20, "high": 80, "noise": 1.0, "revert": 0.05},
+
+    # UPS (Eaton 9395)
+    "IT.UPS.BatteryPct": {"low": 85, "high": 100, "noise": 0.2, "revert": 0.02},
+    "IT.UPS.BatteryTemp": {"low": 20, "high": 30, "noise": 0.2, "revert": 0.05},
+    "IT.UPS.EstimatedRuntime": {"low": 15, "high": 45, "noise": 0.5, "revert": 0.05},
+    "IT.UPS.LoadPct": {"low": 30, "high": 70, "noise": 0.5, "revert": 0.05},
+
+    # Fire Water System (Xylem diesel fire pump package)
+    "FIRE.SYS.BatteryVoltage": {"low": 24, "high": 28, "noise": 0.1, "revert": 0.05},
+    "FIRE.SYS.DieselFuelLevel": {"low": 70, "high": 100, "noise": 0.3, "revert": 0.02},
+    "FIRE.SYS.HeaderPressure": {"low": 7, "high": 10, "noise": 0.05, "revert": 0.05},
+    "FIRE.SYS.TankLevel": {"low": 80, "high": 100, "noise": 0.3, "revert": 0.02},
+
+    # RO/DI System (Grundfos Hydro MPC-E skid)
+    "WT.RO.ConductivityIn": {"low": 300, "high": 800, "noise": 5.0, "revert": 0.05},
+    "WT.RO.ConductivityOut": {"low": 5, "high": 30, "noise": 1.0, "revert": 0.05},
+    "WT.RO.FeedPressure": {"low": 10, "high": 16, "noise": 0.1, "revert": 0.05},
+    "WT.RO.MembraneDP": {"low": 0.3, "high": 1.0, "noise": 0.02, "revert": 0.05},
+    "WT.RO.PermeateFlow": {"low": 5, "high": 12, "noise": 0.2, "revert": 0.05},
+    "WT.RO.Power_kW": {"low": 15, "high": 30, "noise": 0.5, "revert": 0.05},
+    "WT.RO.RejectFlow": {"low": 3, "high": 8, "noise": 0.2, "revert": 0.05},
+
+    # Water Treatment System (Evoqua skid)
+    "WT.SYS.ChemicalLevel": {"low": 40, "high": 100, "noise": 0.3, "revert": 0.02},
+    "WT.SYS.Conductivity": {"low": 200, "high": 600, "noise": 5.0, "revert": 0.05},
+    "WT.SYS.DosingRate": {"low": 0.5, "high": 5.0, "noise": 0.1, "revert": 0.05},
+    "WT.SYS.FilterDP": {"low": 0.2, "high": 0.5, "noise": 0.02, "revert": 0.05},
+    "WT.SYS.RawWaterFlow": {"low": 10, "high": 30, "noise": 0.5, "revert": 0.05},
+    "WT.SYS.TreatedWaterFlow": {"low": 10, "high": 28, "noise": 0.5, "revert": 0.05},
+    "WT.SYS.Turbidity": {"low": 0.1, "high": 0.8, "noise": 0.05, "revert": 0.05},
+    "WT.SYS.pH": {"low": 6.8, "high": 7.8, "noise": 0.03, "revert": 0.05},
+
+    # Effluent / Wastewater Treatment (Evoqua skid)
+    "WW.SYS.BlowerPower": {"low": 5, "high": 20, "noise": 0.3, "revert": 0.05},
+    "WW.SYS.DO": {"low": 2, "high": 5, "noise": 0.1, "revert": 0.05},
+    "WW.SYS.EffluentFlow": {"low": 5, "high": 20, "noise": 0.5, "revert": 0.05},
+    "WW.SYS.InfluentFlow": {"low": 5, "high": 20, "noise": 0.5, "revert": 0.05},
+    "WW.SYS.ORP": {"low": 50, "high": 200, "noise": 3.0, "revert": 0.05},
+    "WW.SYS.SludgeLevel": {"low": 20, "high": 60, "noise": 0.5, "revert": 0.05},
+    "WW.SYS.Turbidity": {"low": 5, "high": 20, "noise": 0.5, "revert": 0.05},
+    "WW.SYS.pH": {"low": 6.5, "high": 8.0, "noise": 0.03, "revert": 0.05},
+
+    # Filling Machine (IMA line)
+    "FILL.FILL.ActualWeight": {"low": 0.95, "high": 1.05, "noise": 0.005, "revert": 0.05},
+    "FILL.FILL.ContainerSize": {"low": 0.95, "high": 1.05, "noise": 0.0, "revert": 0.05},
+    "FILL.FILL.CycleTime": {"low": 2.0, "high": 5.0, "noise": 0.1, "revert": 0.05},
+    "FILL.FILL.Downtime": {"low": 0, "high": 30, "noise": 1.0, "revert": 0.05},
+    "FILL.FILL.Power_kW": {"low": 3, "high": 10, "noise": 0.2, "revert": 0.05},
+    "FILL.FILL.TargetWeight": {"low": 0.95, "high": 1.05, "noise": 0.0, "revert": 0.05},
+
+    # High-Speed Disperser (Ross HSD)
+    "PROD.DISP.BearingTemp": {"low": 40, "high": 65, "noise": 0.3, "revert": 0.05},
+    "PROD.DISP.MotorCurrent": {"low": 20, "high": 40, "noise": 0.3, "revert": 0.05},
+    "PROD.DISP.MotorPower": {"low": 10, "high": 25, "noise": 0.5, "revert": 0.05},
+    "PROD.DISP.ProcessTemp": {"low": 25, "high": 50, "noise": 0.3, "revert": 0.05},
+    "PROD.DISP.Speed": {"low": 800, "high": 2500, "noise": 10.0, "revert": 0.05},
+    "PROD.DISP.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+
+    # Bead Mill (NETZSCH Zeta LMZ)
+    "PROD.MILL.BearingTemp": {"low": 40, "high": 65, "noise": 0.3, "revert": 0.05},
+    "PROD.MILL.MotorCurrent": {"low": 15, "high": 30, "noise": 0.3, "revert": 0.05},
+    "PROD.MILL.MotorPower": {"low": 7, "high": 18, "noise": 0.4, "revert": 0.05},
+    "PROD.MILL.ProcessTemp": {"low": 25, "high": 50, "noise": 0.3, "revert": 0.05},
+    "PROD.MILL.Speed": {"low": 500, "high": 1500, "noise": 8.0, "revert": 0.05},
+    "PROD.MILL.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+
+    # Mixer (Silverson high-shear)
+    "PROD.MIX.BearingTemp": {"low": 40, "high": 65, "noise": 0.3, "revert": 0.05},
+    "PROD.MIX.MotorCurrent": {"low": 15, "high": 35, "noise": 0.3, "revert": 0.05},
+    "PROD.MIX.MotorPower": {"low": 8, "high": 20, "noise": 0.4, "revert": 0.05},
+    "PROD.MIX.ProcessTemp": {"low": 25, "high": 50, "noise": 0.3, "revert": 0.05},
+    "PROD.MIX.Speed": {"low": 1000, "high": 3000, "noise": 10.0, "revert": 0.05},
+    "PROD.MIX.Vibration": {"low": 1.0, "high": 3.0, "noise": 0.05, "revert": 0.05},
+
+    # Dust Collector (Donaldson Torit)
+    "DUST.DC.FanPower": {"low": 5, "high": 20, "noise": 0.3, "revert": 0.05},
+    "DUST.DC.FilterDP": {"low": 300, "high": 800, "noise": 5.0, "revert": 0.05},
+    "DUST.DC.HopperLevel": {"low": 10, "high": 50, "noise": 0.5, "revert": 0.05},
+
+    # Solvent Transfer
+    "SOLV.SYS.Flow": {"low": 10, "high": 40, "noise": 0.5, "revert": 0.05},
+    "SOLV.SYS.LinePressure": {"low": 2.0, "high": 5.0, "noise": 0.05, "revert": 0.05},
+    "SOLV.SYS.PumpCurrent": {"low": 5, "high": 15, "noise": 0.3, "revert": 0.05},
+
+    # Tank (generic process/storage)
+    "TANK.TK.AgitatorCurrent": {"low": 5, "high": 15, "noise": 0.3, "revert": 0.05},
+    "TANK.TK.AgitatorSpeed": {"low": 30, "high": 100, "noise": 1.0, "revert": 0.05},
+    "TANK.TK.Level": {"low": 20, "high": 80, "noise": 0.5, "revert": 0.05},
+    "TANK.TK.Temperature": {"low": 20, "high": 40, "noise": 0.3, "revert": 0.05},
+    "TANK.TK.Weight": {"low": 200, "high": 800, "noise": 3.0, "revert": 0.05},
+
+    # Area Monitoring - Laboratory/QC (tightly controlled) and
+    # Warehouse (looser, more ambient-influenced) - same shape as the
+    # existing MCCROOM.ENV entries, distinct bands per area type.
+    "LABORATORYQC.ENV.Temperature": {"low": 20, "high": 24, "noise": 0.2, "revert": 0.05},
+    "LABORATORYQC.ENV.Humidity": {"low": 40, "high": 55, "noise": 0.4, "revert": 0.05},
+    "LABORATORYQC.ENV.Power_kW": {"low": 2, "high": 8, "noise": 0.2, "revert": 0.05},
+    "WAREHOUSE.ENV.Temperature": {"low": 18, "high": 32, "noise": 0.3, "revert": 0.05},
+    "WAREHOUSE.ENV.Humidity": {"low": 35, "high": 65, "noise": 0.4, "revert": 0.05},
+    "WAREHOUSE.ENV.Power_kW": {"low": 5, "high": 15, "noise": 0.3, "revert": 0.05},
 }
 
 
@@ -159,6 +284,32 @@ FAULTED_CYCLES = (10, 30)
 RECOVERING_CYCLES = (20, 40)
 
 FAULT_CODES = ("E101", "E204", "E317", "E450")
+
+# Only *.AlarmCode is genuinely fault-related (cycles between "None"
+# and a fault code as the instance's severity changes - see
+# _update_string). Every other STRING signal in this dataset is
+# informational (a batch/product/material identity, not a fault), and
+# gets a plausible-looking, STABLE value instead - generated once and
+# then left alone, same as a real batch number wouldn't change every
+# 2-second poll. Keyed by the tag's final segment (the signal name).
+STRING_KIND_GENERATORS = {
+    "BatchNumber": lambda rng: f"BATCH-{rng.randint(10000, 99999)}",
+    "ProductCode": lambda rng: f"PROD-{rng.choice('ABCD')}{rng.randint(100, 999)}",
+    "MaterialID": lambda rng: f"MAT-{rng.randint(1000, 9999)}",
+    "MaterialCode": lambda rng: f"MAT-{rng.randint(1000, 9999)}",
+    "SourceTank": lambda rng: f"TK{rng.randint(1, 4):02d}",
+    "DestinationTank": lambda rng: f"TK{rng.randint(1, 4):02d}",
+}
+
+
+def _generic_string_value(tag_name: str) -> str:
+    signal = tag_name.rsplit(".", 1)[-1]
+    generator = STRING_KIND_GENERATORS.get(signal)
+
+    if generator is None:
+        return "N/A"
+
+    return generator(random.Random(tag_name))
 
 
 class _InstanceFaultState:
@@ -275,6 +426,17 @@ class TagDatasetSimulator:
         self._values: dict[str, Any] = {}
         self._instances: dict[str, _InstanceFaultState] = {}
 
+        # instance_key -> that instance's "running" BOOL tag name (e.g.
+        # "...RunStatus"/"...CompressorStatus"), used by _update_int()
+        # so a start counter increments on the instance's own actual
+        # 0->1 transition instead of being decoupled from it - see the
+        # comment on _update_int() for why this needed a real fix.
+        self._running_tag_by_instance: dict[str, str] = {
+            self._instance_key(tag["tag_name"]): tag["tag_name"]
+            for tag in self._tags
+            if tag["data_type"] == "BOOL" and tag["measurement"] == "running"
+        }
+
         self._initialize_state()
         self._ensure_command_table()
 
@@ -350,7 +512,7 @@ class TagDatasetSimulator:
                 FROM tags
                 WHERE enabled = 1
                   AND driver = 'simulator'
-                  AND tag_name LIKE '%.%.%.%'
+                  AND tag_name LIKE '%.%.%'
                 ORDER BY tag_name
                 """
             ).fetchall()
@@ -393,7 +555,9 @@ class TagDatasetSimulator:
             return 0
 
         if data_type == "STRING":
-            return "None"
+            if tag["tag_name"].endswith(".AlarmCode"):
+                return "None"
+            return _generic_string_value(tag["tag_name"])
 
         if data_type == "INT":
             return 0
@@ -479,9 +643,34 @@ class TagDatasetSimulator:
         self,
         tag: dict[str, Any],
         instance: _InstanceFaultState,
+        previous_values: dict[str, Any],
     ) -> int:
-        current = self._values[tag["tag_name"]]
+        tag_name = tag["tag_name"]
+        current = self._values[tag_name]
 
+        # Start counters ("...StartCount"/"...Starts") should track the
+        # instance's own running-status BOOL, not be decoupled from it -
+        # previously this incremented on fault-onset or independent
+        # random noise, so a "run count" bore no actual relationship to
+        # how many times the equipment had really started. Now driven
+        # by a genuine 0->1 transition of the paired running tag this
+        # same cycle (BOOL tags are updated in the pass before this one
+        # - see update_values() - so both the before and after values
+        # are available here regardless of tag-name sort order).
+        if tag_name.endswith(("StartCount", "Starts")):
+            running_tag = self._running_tag_by_instance.get(
+                self._instance_key(tag_name)
+            )
+
+            if running_tag is not None:
+                was_running = bool(previous_values.get(running_tag, 0))
+                is_running = bool(self._values.get(running_tag, 0))
+
+                return current + 1 if (not was_running and is_running) else current
+
+        # Every other INT tag (production GoodCount/RejectCount, or a
+        # start-style counter with no paired running tag) keeps the
+        # original fault-linked/independent-random-noise behavior.
         if instance.just_entered_fault or self._rng.random() < 0.0005:
             return current + 1
 
@@ -502,6 +691,17 @@ class TagDatasetSimulator:
         for instance in self._instances.values():
             instance.advance()
 
+        # Snapshotted before any of this cycle's updates, so
+        # _update_int() can compare a running-status BOOL's value from
+        # before this cycle against its value after (set in the first
+        # pass below) to detect a genuine 0->1 transition.
+        previous_values = dict(self._values)
+
+        # Two passes: REAL/BOOL tags are finalized for this cycle
+        # first, so the second pass's INT tags (specifically start
+        # counters, see _update_int()) can safely read a sibling
+        # running-status BOOL's before/after values regardless of
+        # which tag name happens to sort first alphabetically.
         for tag in self._tags:
             tag_name = tag["tag_name"]
             instance = self._instances[self._instance_key(tag_name)]
@@ -512,10 +712,22 @@ class TagDatasetSimulator:
                 self._values[tag_name] = self._update_real(tag, severity)
             elif data_type == "BOOL":
                 self._values[tag_name] = self._update_bool(tag, severity)
-            elif data_type == "INT":
-                self._values[tag_name] = self._update_int(tag, instance)
-            elif data_type == "STRING":
+
+        for tag in self._tags:
+            tag_name = tag["tag_name"]
+            instance = self._instances[self._instance_key(tag_name)]
+            severity = instance.severity()
+            data_type = tag["data_type"]
+
+            if data_type == "INT":
+                self._values[tag_name] = self._update_int(
+                    tag, instance, previous_values
+                )
+            elif data_type == "STRING" and tag_name.endswith(".AlarmCode"):
                 self._values[tag_name] = self._update_string(severity)
+            # Other STRING tags (BatchNumber/ProductCode/MaterialID/...)
+            # keep their _initial_value() forever - informational, not
+            # fault-linked, so there's nothing to update each cycle.
 
     def get_tags(self) -> list[tuple[str, str, Any]]:
         return [
