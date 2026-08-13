@@ -80,6 +80,7 @@ with no changes needed to this app.
 general_pages = [
     st.Page(_overview_page, title="Home", icon="🏭", default=True),
     st.Page("pages/1_Ask_AI.py", title="Ask AI", icon="💬"),
+    st.Page("pages/12_SCADA_Floor_Plan.py", title="SCADA Floor Plan", icon="🗺️"),
     st.Page("pages/2_Live_Data.py", title="Live Data", icon="📊"),
     st.Page("pages/5_Event_Records.py", title="Event Records", icon="📋"),
 ]
