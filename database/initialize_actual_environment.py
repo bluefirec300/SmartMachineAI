@@ -16,6 +16,7 @@ Safe to re-run - every step it calls is itself idempotent/additive.
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 
 from config.environment import ENVIRONMENTS
@@ -67,14 +68,27 @@ def initialize_actual_environment() -> None:
     user_manager = UserManager(database_path=config_db_path)
 
     if user_manager.get_user("admin") is None:
+        # Random per-install password, not a fixed default - a
+        # hardcoded credential in source (even a "change me on first
+        # login" one) is one every clone of this repo ships with, and
+        # is exactly the kind of thing a security scan flags. Printed
+        # once here since this script has no other way to hand it to
+        # whoever is running it; there's no forced-password-change-on-
+        # first-login flow yet, so treat this printed value as the
+        # real password, not a placeholder to remember to change.
+        admin_password = secrets.token_urlsafe(12)
         user_manager.create_user(
             username="admin",
             display_name="Administrator",
-            password="123456",
+            password=admin_password,
             role="admin",
             created_by="system",
         )
-        print("Created default admin account (username: admin, password: 123456)")
+        print(
+            "Created default admin account - username: admin, "
+            f"password: {admin_password}"
+        )
+        print("Save this password now - it is not stored or shown again.")
     else:
         print("Admin account already exists, left unchanged.")
 
