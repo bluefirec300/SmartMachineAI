@@ -15,7 +15,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.ask import AskEngine
 
 
-st.set_page_config(page_title="Ask AI - SmartMachineAI", page_icon="💬", layout="wide")
 st.title("💬 Ask AI")
 
 if "ask_engine" not in st.session_state:

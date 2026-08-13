@@ -6,23 +6,31 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from dateutil.relativedelta import relativedelta
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ui import auth
 from ui.data_access import (
     add_maintenance_entry,
     add_service_entry,
     get_equipment_list,
     get_maintenance_history,
+    get_person_in_charge_options,
     get_service_history,
 )
 
 
-st.set_page_config(page_title="Service & Maintenance - SmartMachineAI", page_icon="🛠️", layout="wide")
+current_user = auth.current_user()
+can_edit = auth.can_edit("admin", "engineer")
+
 st.title("🛠️ Service & Maintenance")
+
+if not can_edit:
+    st.info("View-only - only Engineer and Administrator accounts can log service/maintenance work.")
 
 CATEGORIES = [
     "Preventive Maintenance",
@@ -32,17 +40,20 @@ CATEGORIES = [
     "Calibration",
 ]
 
-# Placeholder until a real user-management feature exists (explicitly
-# scoped as "develop it later" - not built here). Swap this for a real
-# list (e.g. a `users` table) once that feature lands; nothing else in
-# this page needs to change when it does.
-PERSON_IN_CHARGE_OPTIONS = [
-    "Ahmad Faizal",
-    "Siti Nurhaliza",
-    "Kumar Raj",
-    "Wong Mei Ling",
-    "Tan Wei Jian",
-]
+# Real accounts now that the users table/login exists (see
+# ui/data_access.py's get_person_in_charge_options) - display names of
+# every active user, regardless of role, since anyone logged in could
+# physically be the one who did the work.
+PERSON_IN_CHARGE_OPTIONS = get_person_in_charge_options()
+
+NEXT_DUE_INTERVALS = {
+    "1 month": 1,
+    "3 months": 3,
+    "6 months": 6,
+    "12 months": 12,
+    "18 months": 18,
+    "24 months": 24,
+}
 
 DUE_SOON_WINDOW_DAYS = 14
 
@@ -104,7 +115,7 @@ def _mark_done_dialog(equipment: dict) -> None:
     suggested_next_due = _next_due(equipment) or date.today()
     next_due = st.date_input("Next due date", value=suggested_next_due, key="dialog_next_due")
 
-    if st.button("Save", type="primary", key="dialog_save"):
+    if st.button("Save", type="primary", key="dialog_save", disabled=not auth.can_edit("admin", "engineer")):
         if not report.strip():
             st.error("Please describe what was done.")
         else:
@@ -131,7 +142,9 @@ def _new_service_dialog(equipment_options: dict) -> None:
         key="service_dialog_report",
     )
 
-    if st.button("Save", type="primary", key="service_dialog_save"):
+    if st.button(
+        "Save", type="primary", key="service_dialog_save", disabled=not auth.can_edit("admin", "engineer")
+    ):
         if not report.strip():
             st.error("Please describe what was done.")
         else:
@@ -157,7 +170,12 @@ service_tab, maintenance_tab = st.tabs(["Service", "Maintenance"])
 with service_tab:
     st.subheader("Service Records")
 
-    if st.button("+ New Service Record", type="primary"):
+    if not equipment_options:
+        st.info("No equipment configured yet - an Administrator needs to add some first.")
+
+    if st.button(
+        "+ New Service Record", type="primary", disabled=not can_edit or not equipment_options
+    ):
         _new_service_dialog(equipment_options)
 
     service_history_filter = st.selectbox(
@@ -182,7 +200,7 @@ with service_tab:
                 for row in service_rows
             ]
         )
-        st.dataframe(service_df, hide_index=True, width="stretch")
+        st.dataframe(service_df, hide_index=True, width="stretch", height=400)
 
 with maintenance_tab:
     st.subheader("Upcoming & Overdue Maintenance")
@@ -228,6 +246,7 @@ with maintenance_tab:
         schedule_df,
         hide_index=True,
         width="stretch",
+        height=400,
         on_select="rerun",
         selection_mode="single-row",
         key="schedule_table",
@@ -248,52 +267,96 @@ with maintenance_tab:
             done_col, ignore_col = st.columns(2)
 
             with done_col:
-                if st.button("✅ Mark as Done", key=f"done_{selected_equipment['id']}"):
+                if st.button(
+                    "✅ Mark as Done",
+                    key=f"done_{selected_equipment['id']}",
+                    disabled=not can_edit,
+                ):
                     _mark_done_dialog(selected_equipment)
 
             with ignore_col:
-                if st.button("🚫 Ignore", key=f"ignore_{selected_equipment['id']}"):
+                if st.button(
+                    "🚫 Ignore",
+                    key=f"ignore_{selected_equipment['id']}",
+                    disabled=not can_edit,
+                ):
                     st.session_state["ignored_overdue"].add(selected_equipment["id"])
                     st.rerun()
 
     st.divider()
     st.subheader("Log Maintenance Work")
 
-    selected_name = st.selectbox("Equipment", sorted(equipment_options), key="log_equipment")
-    selected_equipment = equipment_options[selected_name]
+    if not equipment_options:
+        st.info("No equipment configured yet - an Administrator needs to add some first.")
+    else:
+        st.caption("All fields are required except Parts Replaced.")
 
-    category = st.selectbox("Category", CATEGORIES, key="log_category")
-    description = st.text_area("What was done?", placeholder="e.g. Changed compressor oil", key="log_description")
-    parts_replaced = st.text_input("Parts replaced (optional)", key="log_parts")
-    performed_by = st.text_input("Performed by (optional)", key="log_performed_by")
-    performed_at = st.date_input("Date performed", value=today, key="log_performed_at")
+        LOG_FORM_KEYS = (
+            "log_equipment",
+            "log_category",
+            "log_description",
+            "log_parts",
+            "log_performed_by",
+            "log_performed_at",
+            "log_next_due_interval",
+        )
 
-    skip_next_due = st.checkbox("Don't set a next-due date (leave existing schedule as is)", key="log_skip_next_due")
-    suggested_next_due = _next_due(selected_equipment) or today
-    next_due_input = None
-    if not skip_next_due:
-        next_due_input = st.date_input("Next due date", value=suggested_next_due, key="log_next_due_input")
+        selected_name = st.selectbox(
+            "Equipment", sorted(equipment_options), key="log_equipment", disabled=not can_edit
+        )
+        selected_equipment = equipment_options[selected_name]
 
-    if st.button("Save Entry", type="primary", key="log_save"):
-        if not description.strip():
-            st.error("Please describe what was done.")
-        else:
-            add_maintenance_entry(
-                equipment_id=selected_equipment["id"],
-                category=category,
-                description=description.strip(),
-                performed_at=performed_at.isoformat(),
-                parts_replaced=parts_replaced.strip() or None,
-                performed_by=performed_by.strip() or None,
-                next_due_at=next_due_input.isoformat() if next_due_input else None,
-            )
-            # New work logged means whatever schedule state this
-            # equipment had before (including a prior "Ignore") is
-            # stale - let it reappear in Upcoming & Overdue reflecting
-            # the just-logged update.
-            st.session_state["ignored_overdue"].discard(selected_equipment["id"])
-            st.success(f"Logged {category.lower()} for {selected_equipment['display_name']}.")
-            st.rerun()
+        category = st.selectbox("Category", CATEGORIES, key="log_category", disabled=not can_edit)
+        description = st.text_area(
+            "What was done?",
+            placeholder="e.g. Changed compressor oil",
+            key="log_description",
+            disabled=not can_edit,
+        )
+        parts_replaced = st.text_input(
+            "Parts replaced (optional)", key="log_parts", disabled=not can_edit
+        )
+        performed_by = st.selectbox(
+            "Performed By", PERSON_IN_CHARGE_OPTIONS, key="log_performed_by", disabled=not can_edit
+        )
+        performed_at = st.date_input(
+            "Date performed", value=today, key="log_performed_at", disabled=not can_edit
+        )
+
+        next_due_choice = st.segmented_control(
+            "Next due in",
+            list(NEXT_DUE_INTERVALS.keys()),
+            default="3 months",
+            key="log_next_due_interval",
+            disabled=not can_edit,
+        )
+
+        if st.button("Save Entry", type="primary", key="log_save", disabled=not can_edit):
+            if not description.strip():
+                st.error("Please describe what was done.")
+            elif not next_due_choice:
+                st.error("Please select a next-due interval.")
+            else:
+                next_due_input = performed_at + relativedelta(months=NEXT_DUE_INTERVALS[next_due_choice])
+                add_maintenance_entry(
+                    equipment_id=selected_equipment["id"],
+                    category=category,
+                    description=description.strip(),
+                    performed_at=performed_at.isoformat(),
+                    parts_replaced=parts_replaced.strip() or None,
+                    performed_by=performed_by,
+                    next_due_at=next_due_input.isoformat(),
+                )
+                # New work logged means whatever schedule state this
+                # equipment had before (including a prior "Ignore") is
+                # stale - let it reappear in Upcoming & Overdue reflecting
+                # the just-logged update.
+                st.session_state["ignored_overdue"].discard(selected_equipment["id"])
+                st.success(f"Logged {category.lower()} for {selected_equipment['display_name']}.")
+
+                for form_key in LOG_FORM_KEYS:
+                    st.session_state.pop(form_key, None)
+                st.rerun()
 
     st.divider()
     st.subheader("Maintenance History")
@@ -323,4 +386,4 @@ with maintenance_tab:
                 for row in history_rows
             ]
         )
-        st.dataframe(history_df, hide_index=True, width="stretch")
+        st.dataframe(history_df, hide_index=True, width="stretch", height=400)

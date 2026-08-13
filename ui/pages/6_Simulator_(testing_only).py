@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ai.rule_engine import RuleEngine
 from database.database import DatabaseManager
+from ui import auth
 from ui.data_access import (
     CONFIG_DATABASE_PATH,
     MACHINE_DATABASE_PATH,
@@ -24,8 +25,9 @@ from ui.data_access import (
 )
 
 
-st.set_page_config(page_title="Simulator Control - SmartMachineAI", page_icon="🧪", layout="wide")
-st.title("🧪 Simulator Control")
+can_edit = auth.can_edit("admin", "engineer")
+
+st.title("🧪 Simulator (Testing Only)")
 st.warning(
     "**Temporary developer tool** - for testing the AI's root-cause diagnosis against a "
     "known, on-demand fault instead of waiting for the simulator's normal random timing "
@@ -69,17 +71,9 @@ instance_options = {row["equipment_display_name"]: row["instance_key"] for row i
 selected_name = st.selectbox("Equipment instance", sorted(instance_options))
 selected_instance_key = instance_options[selected_name]
 
-trigger_col, recover_col = st.columns(2)
-
-with trigger_col:
-    if st.button("🔥 Trigger Fault", type="primary"):
-        send_simulator_command(selected_instance_key, "trigger_fault")
-        st.success(f"Fault command sent for {selected_name}. Watch the live status below.")
-
-with recover_col:
-    if st.button("✅ Force Recover"):
-        send_simulator_command(selected_instance_key, "force_recover")
-        st.success(f"Recover command sent for {selected_name}.")
+if st.button("🔥 Trigger Fault", type="primary", disabled=not can_edit):
+    send_simulator_command(selected_instance_key, "trigger_fault")
+    st.success(f"Fault command sent for {selected_name}. Watch the live status below.")
 
 st.divider()
 st.subheader(f"Live Status - {selected_name}")
@@ -89,6 +83,7 @@ auto_refresh = st.checkbox("Auto-refresh every 5 seconds", value=True, key="sim_
 database = DatabaseManager(db_path=MACHINE_DATABASE_PATH)
 rule_engine = RuleEngine(database_path=CONFIG_DATABASE_PATH)
 latest = database.get_latest_all()
+latest_text = database.get_latest_text_all()
 
 instance_tags = [
     tag
@@ -115,6 +110,33 @@ for tag in instance_tags:
 
 status_df = pd.DataFrame(status_rows)
 
+# "Active fault" isn't just the AlarmCode text tag (only Air
+# Compressors/Chillers have one) - defined generically as "any tag on
+# this instance currently reading ALARM or WARNING", so it works for
+# every equipment type, e.g. pumps/incomers that have no AlarmCode tag
+# at all. AlarmCode, when this instance has one, is shown as extra
+# detail alongside it.
+alarm_rows = [row for row in status_rows if row["Status"] in ("ALARM", "WARNING")]
+alarm_code_reading = latest_text.get(f"{selected_instance_key}.AlarmCode")
+alarm_code_value = alarm_code_reading["value"] if alarm_code_reading else None
+
+fault_col, stop_col = st.columns([4, 1])
+
+if alarm_rows:
+    code_suffix = f" (code: {alarm_code_value})" if alarm_code_value and alarm_code_value != "None" else ""
+    with fault_col:
+        st.error(
+            f"🔥 **Active fault**{code_suffix} - {len(alarm_rows)} tag(s) out of range: "
+            + ", ".join(row["Tag"].rsplit(".", 1)[-1] for row in alarm_rows)
+        )
+    with stop_col:
+        if st.button("⏹ Stop", disabled=not can_edit):
+            send_simulator_command(selected_instance_key, "force_recover")
+            st.success(f"Recover command sent for {selected_name}.")
+else:
+    with fault_col:
+        st.success("✅ No active fault")
+
 status_colors = {
     "ALARM": "background-color: #ffb3b3; color: #1a1a1a",
     "WARNING": "background-color: #ffe6a3; color: #1a1a1a",
@@ -126,7 +148,7 @@ def _highlight(row: pd.Series) -> list[str]:
     return [status_colors.get(row["Status"], "")] * len(row)
 
 
-st.dataframe(status_df.style.apply(_highlight, axis=1), hide_index=True, width="stretch")
+st.dataframe(status_df.style.apply(_highlight, axis=1), hide_index=True, width="stretch", height=400)
 
 st.divider()
 st.subheader("Recent Commands")
@@ -146,7 +168,7 @@ else:
             for row in command_rows
         ]
     )
-    st.dataframe(command_df, hide_index=True, width="stretch")
+    st.dataframe(command_df, hide_index=True, width="stretch", height=400)
 
 if auto_refresh:
     time.sleep(5)

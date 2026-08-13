@@ -17,7 +17,6 @@ from ai.trend_analyzer import format_number
 from ui.data_access import MACHINE_DATABASE_PATH, get_event_filter_options
 
 
-st.set_page_config(page_title="Event Records - SmartMachineAI", page_icon="📋", layout="wide")
 st.title("📋 Event Records")
 st.caption("Alarm and warning history recorded by the background event monitor.")
 

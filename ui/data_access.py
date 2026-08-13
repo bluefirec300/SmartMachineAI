@@ -12,8 +12,25 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-CONFIG_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
-MACHINE_DATABASE_PATH = PROJECT_ROOT / "database" / "machine_data.db"
+from config.environment import get_config_db_path, get_machine_db_path
+
+CONFIG_DATABASE_PATH = get_config_db_path()
+MACHINE_DATABASE_PATH = get_machine_db_path()
+
+
+def get_person_in_charge_options() -> list[str]:
+    """
+    Display names of every active login account, for the "Person in
+    Charge"/"Performed By" dropdowns on Service & Maintenance -
+    replaces the earlier hardcoded placeholder list now that real
+    accounts exist (see engine/seed_users.py).
+    """
+    from config.user_manager import UserManager
+
+    manager = UserManager(database_path=CONFIG_DATABASE_PATH)
+    return sorted(
+        user["display_name"] for user in manager.get_users() if user["active"]
+    )
 
 
 def get_enabled_tags() -> list[dict[str, Any]]:

@@ -13,17 +13,24 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.configuration_manager import ConfigurationManager
 from database.database import DatabaseManager
-from simulator.tag_dataset_model import MONOTONIC_UNITS
+from engine.seed_engineering_thresholds import THRESHOLD_PROFILES
+from simulator.tag_dataset_model import MONOTONIC_UNITS, canonical_key
+from ui import auth
 from ui.data_access import CONFIG_DATABASE_PATH, MACHINE_DATABASE_PATH, get_enabled_tags
 
 
-st.set_page_config(page_title="Setpoints - SmartMachineAI", page_icon="⚙️", layout="wide")
+current_user = auth.current_user()
+can_edit = auth.can_edit("admin", "engineer")
+
 st.title("⚙️ Setpoints")
 st.caption(
     "View and edit the low/high warning and alarm limits used to evaluate "
     "each tag. Changes take effect immediately and are recorded in the "
     "audit log."
 )
+
+if not can_edit:
+    st.info("View-only - only Engineer and Administrator accounts can change setpoints.")
 
 PARAMETERS = ["low_alarm", "low_warning", "high_warning", "high_alarm"]
 PARAMETER_LABELS = {
@@ -69,7 +76,26 @@ if not all_tags:
     st.stop()
 
 equipment_names = sorted({tag["equipment_display_name"] for tag in all_tags})
-selected_equipment = st.selectbox("Equipment", equipment_names)
+
+search_col, select_col = st.columns([1, 2])
+
+with search_col:
+    equipment_search = st.text_input(
+        "Search equipment", placeholder="e.g. pump, AC01, chiller", key="setpoints_equipment_search"
+    )
+
+filtered_equipment_names = (
+    [name for name in equipment_names if equipment_search.strip().lower() in name.lower()]
+    if equipment_search.strip()
+    else equipment_names
+)
+
+with select_col:
+    if not filtered_equipment_names:
+        st.warning(f"No equipment matches '{equipment_search}'.")
+        st.stop()
+
+    selected_equipment = st.selectbox("Equipment", filtered_equipment_names)
 
 group_tags = [tag for tag in all_tags if tag["equipment_display_name"] == selected_equipment]
 thresholds_by_tag = {row["tag_name"]: row for row in config_manager.get_thresholds()}
@@ -96,23 +122,44 @@ for tag in group_tags:
             st.metric("Current value", f"{reading['value']:.2f} {tag['unit']}".strip())
             st.caption(f"as of {reading['time']}")
 
-    columns = st.columns(4)
-    for column, parameter in zip(columns, PARAMETERS):
-        with column:
-            st.number_input(
-                PARAMETER_LABELS[parameter],
-                value=existing.get(parameter),
-                step=0.1,
-                format="%.2f",
-                key=f"thr_{tag['tag_name']}_{parameter}",
-            )
+    # Only show a box for parameters this tag actually uses (e.g.
+    # Power_kW only ever gets a high side - a low reading isn't a
+    # fault) - a permanently-unused box just reads as missing data.
+    # Two sources of "applicable": the hardcoded profile (demo tags
+    # seeded by engine/seed_engineering_thresholds.py) or - for tags
+    # with no such profile, i.e. anything created through Equipment &
+    # Tag Configuration - simply whichever sides that page's "enable
+    # thresholds" step actually turned on (a parameter already
+    # carrying a value). A tag with neither (profile-less and log-only
+    # by explicit choice) correctly shows no boxes at all, not all 4.
+    profile = THRESHOLD_PROFILES.get(canonical_key(tag["tag_name"]))
+    applicable_parameters = [
+        parameter
+        for parameter in PARAMETERS
+        if (profile is not None and parameter in profile) or existing.get(parameter) is not None
+    ]
+
+    if not applicable_parameters:
+        st.caption("Log only - no thresholds enabled for this tag.")
+    else:
+        columns = st.columns(len(applicable_parameters))
+        for column, parameter in zip(columns, applicable_parameters):
+            with column:
+                st.number_input(
+                    PARAMETER_LABELS[parameter],
+                    value=existing.get(parameter),
+                    step=0.1,
+                    format="%.2f",
+                    key=f"thr_{tag['tag_name']}_{parameter}",
+                    disabled=not can_edit,
+                )
 
 st.divider()
 
 if "setpoints_pending_changes" not in st.session_state:
     st.session_state["setpoints_pending_changes"] = None
 
-if st.button("Review Changes", type="primary"):
+if st.button("Review Changes", type="primary", disabled=not can_edit):
     changes = []
     for tag in group_tags:
         existing = thresholds_by_tag.get(tag["tag_name"], {})
@@ -151,7 +198,7 @@ if pending_changes is not None:
                     tag_name=change["tag_name"],
                     parameter=change["parameter"],
                     value=change["new_value"],
-                    username="ui_user",
+                    username=current_user["username"],
                 )
             st.session_state["setpoints_pending_changes"] = None
             st.success("Changes applied.")
