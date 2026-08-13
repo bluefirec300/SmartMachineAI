@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from config.environment import get_machine_db_path
 
-DB_PATH = Path(__file__).resolve().parent / "machine_data.db"
+
+DB_PATH = get_machine_db_path()
 
 
 class DatabaseManager:
@@ -45,6 +47,23 @@ class DatabaseManager:
                 """
                 CREATE INDEX IF NOT EXISTS idx_plc_data_tag_time
                 ON plc_data(tag, time)
+                """
+            )
+
+            # Current value only (not history) for STRING-typed tags
+            # like AlarmCode, which can't fit plc_data's REAL column -
+            # see app/plc_logger.py. One row per tag, overwritten each
+            # cycle, so the UI can show "what's the alarm code right
+            # now" without needing a full text historian.
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS plc_text_data
+                (
+                    tag TEXT PRIMARY KEY,
+                    address TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    time TEXT NOT NULL
+                )
                 """
             )
 
@@ -101,6 +120,54 @@ class DatabaseManager:
 
         return dict(row)
 
+    def save_text_tag(
+        self,
+        tag: str,
+        address: str,
+        value: str,
+        timestamp: datetime | None = None,
+    ) -> None:
+        if not tag:
+            raise ValueError("Tag name cannot be empty.")
+
+        if not address:
+            raise ValueError("Address cannot be empty.")
+
+        record_time = timestamp or datetime.now()
+
+        with self.get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO plc_text_data (tag, address, value, time)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(tag) DO UPDATE SET
+                    address = excluded.address,
+                    value = excluded.value,
+                    time = excluded.time
+                """,
+                (
+                    tag,
+                    address,
+                    str(value),
+                    record_time.strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+
+    def get_latest_text_all(self) -> dict[str, dict[str, Any]]:
+        with self.get_connection() as connection:
+            rows = connection.execute(
+                "SELECT tag, address, value, time FROM plc_text_data"
+            ).fetchall()
+
+        return {
+            row["tag"]: {
+                "address": row["address"],
+                "value": row["value"],
+                "time": row["time"],
+            }
+            for row in rows
+        }
+
     def get_latest_all(self) -> dict[str, dict[str, Any]]:
         with self.get_connection() as connection:
             rows = connection.execute(
@@ -154,6 +221,44 @@ class DatabaseManager:
                 (
                     tag,
                     start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    limit,
+                ),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    def get_history_range(
+        self,
+        tag: str,
+        start: str,
+        end: str,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """
+        Like get_history(), but for an explicit [start, end] window
+        (both "%Y-%m-%d %H:%M:%S" strings) instead of an "hours ago
+        from now" lookback - needed to pull a specific past calendar
+        day (e.g. "yesterday", or an arbitrary named date) rather than
+        only ever a window ending at the current moment.
+        """
+        if limit <= 0:
+            raise ValueError("Limit must be greater than zero.")
+
+        with self.get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT time, tag, address, value
+                FROM plc_data
+                WHERE tag = ?
+                  AND time >= ?
+                  AND time <= ?
+                ORDER BY time ASC, id ASC
+                LIMIT ?
+                """,
+                (
+                    tag,
+                    start,
+                    end,
                     limit,
                 ),
             ).fetchall()

@@ -1,9 +1,11 @@
 import sqlite3
 from pathlib import Path
 
+from config.environment import get_config_db_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+DATABASE_PATH = get_config_db_path()
 SCHEMA_DIRECTORY = PROJECT_ROOT / "database" / "schema"
 
 
@@ -25,13 +27,14 @@ def get_schema_files() -> list[Path]:
     return schema_files
 
 
-def initialize_config_database() -> Path:
-    DATABASE_PATH.parent.mkdir(
+def initialize_config_database(database_path: Path | str = DATABASE_PATH) -> Path:
+    database_path = Path(database_path)
+    database_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(database_path)
 
     try:
         connection.execute("PRAGMA foreign_keys = ON")
@@ -54,7 +57,7 @@ def initialize_config_database() -> Path:
     finally:
         connection.close()
 
-    return DATABASE_PATH
+    return database_path
 
 
 def main() -> None:
