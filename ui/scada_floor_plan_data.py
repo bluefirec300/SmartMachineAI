@@ -258,10 +258,27 @@ def _todays_energy_kwh(database: DatabaseManager, tag_name: str) -> float | None
     return rows[-1]["value"] - rows[0]["value"]
 
 
-def build_equipment_snapshot(plant: str, database: DatabaseManager, rule_engine: RuleEngine) -> dict[str, dict]:
+def build_equipment_snapshot(
+    plant: str,
+    database: DatabaseManager,
+    rule_engine: RuleEngine,
+    latest: dict | None = None,
+    latest_text: dict | None = None,
+) -> dict[str, dict]:
+    """
+    latest/latest_text are optional pre-fetched results of
+    database.get_latest_all()/get_latest_text_all(). Neither query is
+    filtered by plant (they return every tag's latest value across the
+    whole system), so a caller building snapshots for multiple plants/
+    both builder functions in the same tick can fetch them once and pass
+    them in here to avoid redundant full-table scans. When omitted
+    (the default), fetched internally exactly as before.
+    """
     equipment_list = _load_equipment(plant)
-    latest = database.get_latest_all()
-    latest_text = database.get_latest_text_all()
+    if latest is None:
+        latest = database.get_latest_all()
+    if latest_text is None:
+        latest_text = database.get_latest_text_all()
 
     snapshot: dict[str, dict] = {}
     for equipment in equipment_list:
@@ -286,10 +303,22 @@ def build_equipment_snapshot(plant: str, database: DatabaseManager, rule_engine:
     return snapshot
 
 
-def build_board_snapshot(plant: str, database: DatabaseManager, rule_engine: RuleEngine) -> dict:
+def build_board_snapshot(
+    plant: str,
+    database: DatabaseManager,
+    rule_engine: RuleEngine,
+    latest: dict | None = None,
+    latest_text: dict | None = None,
+) -> dict:
+    """
+    latest/latest_text: see build_equipment_snapshot()'s docstring -
+    same optional pre-fetched-results parameters, same reasoning.
+    """
     equipment_list = _load_equipment(plant)
-    latest = database.get_latest_all()
-    latest_text = database.get_latest_text_all()
+    if latest is None:
+        latest = database.get_latest_all()
+    if latest_text is None:
+        latest_text = database.get_latest_text_all()
     evaluated = [_equipment_status(eq, latest, latest_text, rule_engine) for eq in equipment_list]
 
     incomer_prefix = f"{plant.upper()}.ELEC.MAIN"

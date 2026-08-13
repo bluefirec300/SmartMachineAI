@@ -29,11 +29,19 @@ def build_snapshot() -> dict:
     database = DatabaseManager(db_path=MACHINE_DATABASE_PATH)
     rule_engine = RuleEngine(database_path=CONFIG_DATABASE_PATH)
 
+    # get_latest_all()/get_latest_text_all() are full-table scans over
+    # plc_data and are NOT filtered by plant, so the result is identical
+    # for every plant/builder call in this tick - fetch each exactly once
+    # here and pass them down instead of letting each of the 4 build_*
+    # calls below independently re-run the same expensive query.
+    latest = database.get_latest_all()
+    latest_text = database.get_latest_text_all()
+
     plants = {}
     for plant in PLANTS:
         plants[plant] = {
-            "board": build_board_snapshot(plant, database, rule_engine),
-            "equipment": build_equipment_snapshot(plant, database, rule_engine),
+            "board": build_board_snapshot(plant, database, rule_engine, latest=latest, latest_text=latest_text),
+            "equipment": build_equipment_snapshot(plant, database, rule_engine, latest=latest, latest_text=latest_text),
         }
 
     return {
