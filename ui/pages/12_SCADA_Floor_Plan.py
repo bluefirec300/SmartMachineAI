@@ -194,6 +194,15 @@ let scadaLastGeneratedAt = null;
 let scadaLastAdvanceTime = Date.now();
 let scadaLatestSnapshot = null;
 
+function scadaEscapeHtml(text) {{
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}}
+
 function scadaSetPlant(plant) {{
   scadaCurrentPlant = plant;
   document.getElementById("scada-plant-p01").style.display = plant === "p01" ? "" : "none";
@@ -213,13 +222,13 @@ function scadaFormatNumber(value, decimals) {{
 }}
 
 function scadaBoardHeading(text) {{
-  return '<div class="scada-board-heading">' + text + '</div>';
+  return '<div class="scada-board-heading">' + scadaEscapeHtml(text) + '</div>';
 }}
 
 function scadaBoardRow(label, value, dot) {{
-  const dotHtml = dot ? '<span style="margin-right:4px;">' + dot + '</span>' : '';
-  return '<div class="scada-board-row"><span class="label">' + label +
-    '</span><span class="value">' + dotHtml + value + '</span></div>';
+  const dotHtml = dot ? '<span style="margin-right:4px;">' + scadaEscapeHtml(dot) + '</span>' : '';
+  return '<div class="scada-board-row"><span class="label">' + scadaEscapeHtml(label) +
+    '</span><span class="value">' + dotHtml + scadaEscapeHtml(value) + '</span></div>';
 }}
 
 function scadaRenderBoard(plant, board) {{
@@ -294,13 +303,13 @@ function scadaRenderDetail(equipmentName) {{
     const updated = tag.updated || 'never logged';
     rows += '<div class="scada-detail-row">' +
       '<div class="scada-dot" style="background:' + SEVERITY_COLOR[tag.severity] + ';"></div>' +
-      '<div style="font-family:monospace;font-size:13px;">' + tag.tag_name + '</div>' +
-      '<div style="font-weight:600;font-size:13px;text-align:right;">' + value + unit + '</div>' +
-      '<div style="color:#8a8f98;font-size:12px;text-align:right;">' + updated + '</div></div>';
+      '<div style="font-family:monospace;font-size:13px;">' + scadaEscapeHtml(tag.tag_name) + '</div>' +
+      '<div style="font-weight:600;font-size:13px;text-align:right;">' + scadaEscapeHtml(value) + scadaEscapeHtml(unit) + '</div>' +
+      '<div style="color:#8a8f98;font-size:12px;text-align:right;">' + scadaEscapeHtml(updated) + '</div></div>';
   }}
 
   document.getElementById('scada-detail-body').innerHTML =
-    '<h4 style="margin:4px 0 8px;">' + eq.display_name + '</h4>' + summary + rows;
+    '<h4 style="margin:4px 0 8px;">' + scadaEscapeHtml(eq.display_name) + '</h4>' + summary + rows;
 }}
 
 function scadaApplySnapshot(snapshot) {{
