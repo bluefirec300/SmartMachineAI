@@ -89,7 +89,7 @@ def search_chunks(
 
         rows = connection.execute(
             f"""
-            SELECT document_id, chunk_text
+            SELECT document_id, page_number, chunk_text
             FROM document_chunks_fts
             WHERE document_chunks_fts MATCH ?
               AND document_id IN ({placeholders})
@@ -117,6 +117,11 @@ def search_chunks(
             {
                 "chunk_text": row["chunk_text"],
                 "source": source,
+                # None for chunks stored before page tracking existed,
+                # or from the raw --text CLI path (no page concept) -
+                # app/ask.py only ever tells the model to cite a page
+                # number when one is actually present, never invents one.
+                "page_number": row["page_number"],
             }
         )
 
