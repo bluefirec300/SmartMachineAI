@@ -1,4 +1,5 @@
 from __future__ import annotations
+from config.environment import get_config_db_path
 
 import argparse
 import json
@@ -10,8 +11,9 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
 DEFAULT_DATASET_PATH = PROJECT_ROOT / "config" / "master_tag_list.json"
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 NEW_TAG_COLUMNS = {
     "logging_interval_seconds": "INTEGER",

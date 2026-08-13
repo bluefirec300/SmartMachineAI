@@ -2,6 +2,7 @@ from __future__ import annotations
 import argparse, shutil, sqlite3
 from datetime import datetime
 from pathlib import Path
+from config.environment import get_config_db_path
 from .concept_extractor import MEASUREMENTS, LOCATIONS, EVENTS, normalize, first_match
 
 COLUMNS = {
@@ -88,7 +89,7 @@ def migrate(database: Path, backup: bool = True) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--database", default="database/config.db")
+    p.add_argument("--database", default=str(get_config_db_path()))
     p.add_argument("--no-backup", action="store_true")
     a = p.parse_args()
     migrate(Path(a.database), backup=not a.no_backup)

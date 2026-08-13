@@ -14,6 +14,15 @@ class Concepts:
     event_type: str = ""
     threshold_type: str = ""
     time_expression: str = "latest"
+    plant: str = ""
+    # Set only for a two-period comparison question ("compare X for
+    # today and yesterday", "X on Aug 10 vs Aug 12") - each is a
+    # time_expression string using the same vocabulary as
+    # time_expression above ("today"/"yesterday"/"days_ago:N") plus a
+    # new "date:YYYY-MM-DD" form for an explicit calendar date. Both
+    # empty unless intent == "comparison".
+    compare_period_a: str = ""
+    compare_period_b: str = ""
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

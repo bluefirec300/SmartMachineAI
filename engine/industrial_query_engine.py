@@ -8,6 +8,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from config.environment import get_config_db_path
+
 from .concept_extractor import ConceptExtractor, normalize
 from .models import Candidate, QueryResult, Tag
 
@@ -32,6 +34,20 @@ def overlap(left: object, right: object) -> float:
 
 DESIGNATOR_PATTERN = re.compile(r"^[a-z]{1,8}\d{1,3}$")
 
+PLANT_SEGMENT_PATTERN = re.compile(r"^p\d{1,2}$")
+
+
+def _plant_of(tag_name: str) -> str:
+    """
+    e.g. "P01.UTILITY.AC01.Pressure" -> "p01". Returns "" for a tag
+    name that doesn't start with a plant-style segment (every tag in
+    the current dataset does, but this must never crash on one that
+    doesn't - it just means that tag opts out of plant-tie-breaking).
+    """
+    first_segment = tag_name.split(".", 1)[0].lower()
+
+    return first_segment if PLANT_SEGMENT_PATTERN.match(first_segment) else ""
+
 
 class IndustrialQueryEngine:
     """Deterministic industrial question-to-tag resolver."""
@@ -46,7 +62,7 @@ class IndustrialQueryEngine:
 
     def __init__(
         self,
-        database_path: str | Path = "database/config.db",
+        database_path: str | Path = get_config_db_path(),
         system_config_path: str | Path = "config/system.json",
     ) -> None:
         self.database_path = Path(database_path).expanduser().resolve()
@@ -470,6 +486,98 @@ class IndustrialQueryEngine:
             reasons=tuple(reasons),
         )
 
+    def _break_plant_ties(
+        self,
+        ranked: list[Candidate],
+        concepts: Any,
+    ) -> list[Candidate]:
+        """
+        Resolve a top-score tie that exists ONLY because the same
+        equipment instance code (e.g. "AC01") exists on more than one
+        plant - a real, common situation once more than one plant
+        shares the same numbering convention (see the designator-exact
+        -match branch of _equipment_score(), which scores every
+        same-coded instance identically regardless of plant).
+
+        Prefers whichever plant the question named explicitly
+        (concepts.plant, e.g. "P02 AC01 pressure"), otherwise the
+        lexicographically-first plant among the candidates ("p01"
+        before "p02" before "p03", ...) - not hardcoded to any
+        specific number of plants, so this scales to however many
+        exist without changes here.
+
+        Deliberately narrow: only ever DROPS other-plant duplicates
+        that are true exact-designator-code matches, never re-scores
+        or reorders anything else. Candidates are compared within the
+        same score window (`< 7`) that query()'s own ambiguity check
+        uses below, rather than requiring a near-exact score match -
+        two same-code, different-plant tags rarely land on the
+        *identical* final score (e.g. incidental lexical token overlap
+        with a tag's own "p02..." name already nudges one candidate a
+        point or two above the other), even though they represent the
+        same underlying ambiguity. A genuine difference between two
+        different pieces of equipment is left completely untouched,
+        still surfaced as a real clarification-required ambiguity.
+        """
+        if len(ranked) < 2:
+            return ranked
+
+        top_score = ranked[0].score
+        near_top = [
+            candidate for candidate in ranked if top_score - candidate.score < 7
+        ]
+
+        if len(near_top) < 2:
+            return ranked
+
+        exact_designator_matches = [
+            candidate
+            for candidate in near_top
+            if self._equipment_score(
+                concepts.equipment_terms, candidate.tag
+            )[0]
+            == 1.0
+        ]
+
+        if len(exact_designator_matches) < 2:
+            return ranked
+
+        plants = {
+            _plant_of(candidate.tag.tag_name)
+            for candidate in exact_designator_matches
+        }
+
+        if len(plants) < 2 or "" in plants:
+            # Not a plant-only tie - either every matching candidate is
+            # already on the same plant, or one of them has no
+            # recognizable plant prefix at all. Leave it alone.
+            return ranked
+
+        preferred_plant = (
+            concepts.plant if concepts.plant in plants else min(plants)
+        )
+        preferred = [
+            candidate
+            for candidate in exact_designator_matches
+            if _plant_of(candidate.tag.tag_name) == preferred_plant
+        ]
+
+        if len(preferred) != 1:
+            # Still ambiguous even after picking a plant (e.g. two
+            # different tags tied on the same preferred plant) - don't
+            # guess further.
+            return ranked
+
+        dropped = {
+            id(candidate)
+            for candidate in exact_designator_matches
+            if candidate is not preferred[0]
+        }
+
+        return [
+            candidate for candidate in ranked if id(candidate) not in dropped
+        ]
+
     def query(
         self,
         question: str,
@@ -486,7 +594,11 @@ class IndustrialQueryEngine:
             ),
             key=lambda candidate: candidate.score,
             reverse=True,
-        )[: max(1, limit)]
+        )
+
+        ranked = self._break_plant_ties(ranked, concepts)[
+            : max(1, limit)
+        ]
 
         top = ranked[0] if ranked else None
 

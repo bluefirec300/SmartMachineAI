@@ -1,4 +1,5 @@
 from __future__ import annotations
+from config.environment import get_config_db_path
 
 import argparse
 import sqlite3
@@ -9,7 +10,8 @@ from simulator.tag_dataset_model import MONOTONIC_UNITS, canonical_key
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 # Mirrors the normal operating bands in simulator/tag_dataset_model.py's
 # TAG_PROFILES - warning/alarm sits just outside the realistic normal
@@ -46,9 +48,12 @@ THRESHOLD_PROFILES: dict[str, dict[str, float | None]] = {
     "UTILITY.AC.Pressure": {"low_warning": 6.0, "low_alarm": 5.0, "high_warning": 8.5, "high_alarm": 9.5},
     "UTILITY.AC.Power_kW": {"high_warning": 32, "high_alarm": 35},
 
-    # DewPoint deliberately has no threshold profile - removed per
-    # explicit request (2026-08-09), still simulated and viewable, just
-    # not alarmed on.
+    # Re-added (2026-08-09) after being deliberately cleared earlier the
+    # same day - only a high side, since a drier-than-normal dew point
+    # isn't a fault, only a rising one (moisture/condensation risk) is.
+    # high_alarm (3 C dp) matches the ISO 8573-1 Class 4 dew point
+    # boundary; normal simulated band is -25 to -10 C (see TAG_PROFILES).
+    "UTILITY.AIRHDR.DewPoint": {"high_warning": -5, "high_alarm": 3},
     "UTILITY.AIRHDR.Flow": {"low_warning": 20, "high_warning": 140},
     "UTILITY.AIRHDR.Pressure": {"low_warning": 5.5, "low_alarm": 5.0, "high_warning": 7.5, "high_alarm": 8.0},
 
@@ -80,6 +85,116 @@ THRESHOLD_PROFILES: dict[str, dict[str, float | None]] = {
     "WATER.WSP.Frequency": {"low_warning": 40, "low_alarm": 35, "high_warning": 55, "high_alarm": 58},
     "WATER.WSP.Power_kW": {"high_warning": 22, "high_alarm": 27},
     "WATER.WSP.Vibration": {"high_warning": 4.5, "high_alarm": 7.1},
+
+    # --- Phase 2/3 (P01 tag-dataset expansion, 2026-08-10) - mirrors
+    # simulator/tag_dataset_model.py's TAG_PROFILES additions of the
+    # same date, so the "normal" band and the warning/alarm limits stay
+    # consistent with each other, same as every entry above. ---
+
+    "ELEC.GEN.BatteryVoltage": {"low_warning": 23, "low_alarm": 22, "high_warning": 29, "high_alarm": 30},
+    "ELEC.GEN.CoolantTemp": {"high_warning": 100, "high_alarm": 108},
+    "ELEC.GEN.FuelLevel": {"low_warning": 25, "low_alarm": 15},
+    "ELEC.GEN.Power_kW": {"high_warning": 800, "high_alarm": 880},
+
+    "ELEC.TR.CurrentImbalance": {"high_warning": 5, "high_alarm": 8},
+    "ELEC.TR.LoadPct": {"high_warning": 85, "high_alarm": 95},
+    "ELEC.TR.THD": {"high_warning": 6, "high_alarm": 8},
+    "ELEC.TR.Temperature": {"high_warning": 120, "high_alarm": 140},
+
+    "HVAC.AHU.FanFrequency": {"low_warning": 30, "low_alarm": 25, "high_warning": 55, "high_alarm": 58},
+    "HVAC.AHU.FanPower": {"high_warning": 20, "high_alarm": 25},
+    "HVAC.AHU.FilterDP": {"high_warning": 200, "high_alarm": 250},
+    "HVAC.AHU.Humidity": {"high_warning": 65, "high_alarm": 75},
+    "HVAC.AHU.ReturnAirTemp": {"low_warning": 18, "low_alarm": 15, "high_warning": 30, "high_alarm": 34},
+    "HVAC.AHU.SupplyAirTemp": {"low_warning": 8, "low_alarm": 5, "high_warning": 22, "high_alarm": 26},
+    # ValvePosition deliberately has no threshold - a control output
+    # position, not a measured process variable (same reasoning as
+    # every "*.Setpoint" tag).
+
+    "IT.UPS.BatteryPct": {"low_warning": 50, "low_alarm": 30},
+    "IT.UPS.BatteryTemp": {"high_warning": 35, "high_alarm": 40},
+    "IT.UPS.EstimatedRuntime": {"low_warning": 8, "low_alarm": 4},
+    "IT.UPS.LoadPct": {"high_warning": 85, "high_alarm": 95},
+
+    "FIRE.SYS.BatteryVoltage": {"low_warning": 23, "low_alarm": 22},
+    "FIRE.SYS.DieselFuelLevel": {"low_warning": 50, "low_alarm": 30},
+    "FIRE.SYS.HeaderPressure": {"low_warning": 6, "low_alarm": 5, "high_warning": 12, "high_alarm": 14},
+    "FIRE.SYS.TankLevel": {"low_warning": 70, "low_alarm": 50},
+
+    "WT.RO.ConductivityIn": {"high_warning": 1200, "high_alarm": 1500},
+    "WT.RO.ConductivityOut": {"high_warning": 50, "high_alarm": 100},
+    "WT.RO.FeedPressure": {"low_warning": 8, "low_alarm": 6, "high_warning": 18, "high_alarm": 20},
+    "WT.RO.MembraneDP": {"high_warning": 1.5, "high_alarm": 2.0},
+    "WT.RO.PermeateFlow": {"low_warning": 3, "low_alarm": 1.5},
+    "WT.RO.Power_kW": {"high_warning": 35, "high_alarm": 40},
+    "WT.RO.RejectFlow": {"low_warning": 1.5, "low_alarm": 0.5},
+
+    "WT.SYS.ChemicalLevel": {"low_warning": 25, "low_alarm": 10},
+    "WT.SYS.Conductivity": {"high_warning": 900, "high_alarm": 1200},
+    "WT.SYS.DosingRate": {"low_warning": 0.2, "low_alarm": 0.05, "high_warning": 8, "high_alarm": 10},
+    "WT.SYS.FilterDP": {"high_warning": 0.8, "high_alarm": 1.0},
+    "WT.SYS.RawWaterFlow": {"low_warning": 5, "low_alarm": 2},
+    "WT.SYS.TreatedWaterFlow": {"low_warning": 5, "low_alarm": 2},
+    "WT.SYS.Turbidity": {"high_warning": 1.5, "high_alarm": 3.0},
+    "WT.SYS.pH": {"low_warning": 6.5, "low_alarm": 6.0, "high_warning": 8.5, "high_alarm": 9.0},
+
+    "WW.SYS.BlowerPower": {"high_warning": 25, "high_alarm": 30},
+    "WW.SYS.DO": {"low_warning": 1.5, "low_alarm": 1.0, "high_warning": 6, "high_alarm": 8},
+    "WW.SYS.EffluentFlow": {"low_warning": 1, "low_alarm": 0.2, "high_warning": 30, "high_alarm": 40},
+    "WW.SYS.InfluentFlow": {"low_warning": 1, "low_alarm": 0.2, "high_warning": 30, "high_alarm": 40},
+    "WW.SYS.ORP": {"low_warning": 0, "low_alarm": -50},
+    "WW.SYS.SludgeLevel": {"high_warning": 80, "high_alarm": 95},
+    "WW.SYS.Turbidity": {"high_warning": 30, "high_alarm": 50},
+    "WW.SYS.pH": {"low_warning": 6.0, "low_alarm": 5.5, "high_warning": 8.5, "high_alarm": 9.5},
+
+    "FILL.FILL.ActualWeight": {"low_warning": 0.90, "low_alarm": 0.85, "high_warning": 1.10, "high_alarm": 1.15},
+    # ContainerSize/TargetWeight deliberately have no threshold - fixed
+    # reference values, not measured process variables.
+    "FILL.FILL.CycleTime": {"high_warning": 8, "high_alarm": 12},
+    "FILL.FILL.Downtime": {"high_warning": 120, "high_alarm": 300},
+    "FILL.FILL.Power_kW": {"high_warning": 12, "high_alarm": 15},
+
+    "PROD.DISP.BearingTemp": {"high_warning": 70, "high_alarm": 85},
+    "PROD.DISP.MotorCurrent": {"high_warning": 50, "high_alarm": 60},
+    "PROD.DISP.MotorPower": {"high_warning": 30, "high_alarm": 37},
+    "PROD.DISP.ProcessTemp": {"high_warning": 60, "high_alarm": 70},
+    "PROD.DISP.Speed": {"high_warning": 3000, "high_alarm": 3500},
+    "PROD.DISP.Vibration": {"high_warning": 4.5, "high_alarm": 7.1},
+
+    "PROD.MILL.BearingTemp": {"high_warning": 70, "high_alarm": 85},
+    "PROD.MILL.MotorCurrent": {"high_warning": 38, "high_alarm": 45},
+    "PROD.MILL.MotorPower": {"high_warning": 22, "high_alarm": 28},
+    "PROD.MILL.ProcessTemp": {"high_warning": 60, "high_alarm": 70},
+    "PROD.MILL.Speed": {"high_warning": 1800, "high_alarm": 2000},
+    "PROD.MILL.Vibration": {"high_warning": 4.5, "high_alarm": 7.1},
+
+    "PROD.MIX.BearingTemp": {"high_warning": 70, "high_alarm": 85},
+    "PROD.MIX.MotorCurrent": {"high_warning": 42, "high_alarm": 50},
+    "PROD.MIX.MotorPower": {"high_warning": 25, "high_alarm": 30},
+    "PROD.MIX.ProcessTemp": {"high_warning": 60, "high_alarm": 70},
+    "PROD.MIX.Speed": {"high_warning": 3500, "high_alarm": 4000},
+    "PROD.MIX.Vibration": {"high_warning": 4.5, "high_alarm": 7.1},
+
+    "DUST.DC.FanPower": {"high_warning": 25, "high_alarm": 30},
+    "DUST.DC.FilterDP": {"high_warning": 1200, "high_alarm": 1500},
+    "DUST.DC.HopperLevel": {"high_warning": 75, "high_alarm": 90},
+
+    "SOLV.SYS.Flow": {"low_warning": 3, "low_alarm": 1, "high_warning": 50, "high_alarm": 60},
+    "SOLV.SYS.LinePressure": {"low_warning": 1, "low_alarm": 0.5, "high_warning": 6, "high_alarm": 8},
+    "SOLV.SYS.PumpCurrent": {"high_warning": 18, "high_alarm": 22},
+
+    "TANK.TK.AgitatorCurrent": {"high_warning": 20, "high_alarm": 25},
+    "TANK.TK.AgitatorSpeed": {"high_warning": 120, "high_alarm": 140},
+    "TANK.TK.Level": {"low_warning": 15, "low_alarm": 5, "high_warning": 90, "high_alarm": 97},
+    "TANK.TK.Temperature": {"high_warning": 50, "high_alarm": 60},
+    "TANK.TK.Weight": {"low_warning": 50, "low_alarm": 10, "high_warning": 950, "high_alarm": 1000},
+
+    "LABORATORYQC.ENV.Temperature": {"low_warning": 18, "low_alarm": 16, "high_warning": 27, "high_alarm": 30},
+    "LABORATORYQC.ENV.Humidity": {"high_warning": 65, "high_alarm": 75},
+    "LABORATORYQC.ENV.Power_kW": {"high_warning": 10, "high_alarm": 12},
+    "WAREHOUSE.ENV.Temperature": {"high_warning": 36, "high_alarm": 40},
+    "WAREHOUSE.ENV.Humidity": {"high_warning": 75, "high_alarm": 85},
+    "WAREHOUSE.ENV.Power_kW": {"high_warning": 18, "high_alarm": 22},
 }
 
 # Excluded from thresholds even though numeric: cumulative

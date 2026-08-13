@@ -1,4 +1,5 @@
 from __future__ import annotations
+from config.environment import get_config_db_path
 
 import argparse
 import random
@@ -9,7 +10,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 DEVICE_NUMBER_PREFIX = "EQ"
 
