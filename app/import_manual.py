@@ -3,17 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rag.document_store import DEFAULT_DATABASE_PATH, store_document
-
-
-def _extract_pdf_text(path: Path) -> str:
-    from pypdf import PdfReader
-
-    reader = PdfReader(str(path))
-
-    pages = [page.extract_text() or "" for page in reader.pages]
-
-    return "\n\n".join(pages)
+from rag.document_store import DEFAULT_DATABASE_PATH, extract_pdf_pages, store_document
 
 
 def main() -> None:
@@ -62,6 +52,8 @@ def main() -> None:
     if bool(args.file) == bool(args.text):
         parser.error("Provide exactly one of --file or --text.")
 
+    pages = None
+
     if args.file:
         path = Path(args.file)
 
@@ -69,7 +61,8 @@ def main() -> None:
             parser.error(f"File not found: {path}")
 
         if path.suffix.lower() == ".pdf":
-            text = _extract_pdf_text(path)
+            pages = extract_pdf_pages(str(path))
+            text = ""
         else:
             text = path.read_text(encoding="utf-8")
 
@@ -80,7 +73,7 @@ def main() -> None:
         source_filename = ""
         title = args.title
 
-    if not text.strip():
+    if not (pages and any(p.strip() for p in pages)) and not text.strip():
         parser.error(
             "No extractable text was found - for a scanned/image-only "
             "PDF, this won't work without OCR, which isn't supported."
@@ -90,6 +83,7 @@ def main() -> None:
         brand=args.brand,
         model=args.model,
         text=text,
+        pages=pages,
         title=title,
         source_filename=source_filename,
         database_path=args.database,

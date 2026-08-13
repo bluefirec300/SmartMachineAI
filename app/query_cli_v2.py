@@ -1,10 +1,11 @@
 from __future__ import annotations
 import argparse, json
+from config.environment import get_config_db_path
 from engine import IndustrialQueryEngine
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--database", default="database/config.db")
+    p.add_argument("--database", default=str(get_config_db_path()))
     args = p.parse_args()
     engine = IndustrialQueryEngine(args.database)
 
