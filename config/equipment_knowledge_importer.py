@@ -2,11 +2,13 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+from config.environment import get_config_db_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 DEFAULT_JSON_PATH = PROJECT_ROOT / "config" / "equipment_knowledge.json"
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "database" / "config.db"
+DEFAULT_DATABASE_PATH = get_config_db_path()
 
 
 class EquipmentKnowledgeImporter:
