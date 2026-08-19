@@ -4384,6 +4384,218 @@ from any further prompt engineering.
 
 ---
 
+## Phase 17.2e — Comparison Grounding Hardening
+
+**Completed:** date not recorded at the time; reconstructed 2026-08-19
+from implementation evidence during a durability/documentation
+checkpoint. This section was written after the fact - the objective
+and evidence below come entirely from the code, its comments, and its
+tests, not from a contemporaneous author account.
+
+### Objective (from the code's own account)
+
+Fix a false-rejection bug in `ai/grounding_guard.py`'s comparison
+grounding checks, discovered live during Phase 17.2d Scenario 4. Every
+comparison-specific entity/value extraction pattern used
+`\b(?:entity\s+)?([AB])\b` - the "Entity " prefix was *optional*, so
+under `re.IGNORECASE` a bare, ordinary English article "a" (e.g.
+"...has **a** Data Health score of 91.0") could satisfy `([AB])\b` on
+its own with no "Entity" word nearby, and be misread as a claim about
+"Entity A" - producing a false grounding violation against an answer
+that was actually factually correct.
+
+### Fix
+
+`ai/grounding_guard.py:350` - the optional-prefix pattern was replaced
+with one that requires an explicit "Entity "/"entity " label before
+the letter; a prior comment describing support for a "bare A/B" label
+(no "Entity" word) was also removed, since under `IGNORECASE` a bare
+letter can never distinguish a deliberate capital-A label from an
+ordinary sentence-initial "A".
+
+### Tests
+
+`tests/test_phase17_2e_comparison_grounding_hardening.py` - 22 tests,
+all passing in the regression run performed for this checkpoint:
+- `TestReproduceArticleFalseRejection` - reproduces the exact live
+  failure shape (written against the bug first, per the file's own
+  stated convention).
+- `TestAdversarialArticleAcrossAllPatternFamilies` - the same article-
+  "a" hazard checked against every comparison fact family (health,
+  maintenance priority, data health, energy opportunity, health
+  history), not just the one that triggered the live bug.
+- `TestLegitimateEntityReferencesStillWork` - genuine "Entity A"/
+  "Entity B" labels (including mixed-case, and a bare article
+  alongside a real label in the same sentence) remain checkable.
+- `TestEquipmentNameOnlyClaimsRemainUnchecked` - confirms the
+  pre-existing, deliberate false-negative-over-false-positive design
+  (claims naming equipment instead of A/B are never checked, even if
+  wrong) is unchanged by this fix, not a regression.
+- `TestNumericGroundingUnweakened`,
+  `TestNotComparableAndUnavailableUnweakened`,
+  `TestDataHealthAndHealthDomainsTogether`,
+  `TestFalseAcceptanceProtectionUnweakened` - confirm the fix narrowed
+  the *false-positive* hazard without loosening any of grounding's
+  existing false-negative protections (fabricated numbers, swapped A/
+  B values, NOT_COMPARABLE claims, aggregate "overall winner"
+  language) - all still correctly rejected.
+
+### Verification performed for this checkpoint
+
+Ran the full test file directly - all 22 tests pass. Also confirmed
+via the full `tests/` suite run (1337 passed / 22 subtests passed / 5
+failed, all 5 pre-existing and unrelated - see the regression section
+of this checkpoint) that this file contributes zero failures.
+
+### PHASE 17.2E STATUS: PASS (verification reconstructed after the fact,
+evidence-based, not contemporaneously recorded)
+
+---
+
+## Phase 18.1a — Historian Retention & Backup Worker
+
+**Completed:** date not recorded at the time; reconstructed 2026-08-19
+from implementation evidence during a durability/documentation
+checkpoint, same basis and caveat as Phase 17.2e above.
+
+### Objective (from the code's own account)
+
+Build the historian's retention (row cleanup) and backup mechanism as
+a standalone worker, `app/historian_maintenance_worker.py`, deployed
+via `deploy/systemd/historian_maintenance_worker.service` -
+`WorkerType=simple`, running continuously alongside the other Phase
+6-16 background workers.
+
+### What exists
+
+- **`database/backup.py`** - `backup_sqlite_database()` (SQLite Online
+  Backup API - `sqlite3.Connection.backup()` - never a raw file copy
+  of a database that may be under active write load) and
+  `check_backup_preflight()` (disk-space safety gate: requires
+  `database_size + database_size + minimum_free_reserve_bytes` free,
+  the conservative ~2x-size formula, not the naive
+  `free_space > database_size` check).
+- **`app/historian_maintenance_worker.py`** - pure, testable functions
+  (`run_retention_if_due`, `run_backup_if_due`, `_is_due`,
+  `_prune_old_backups`, `_read_last_run`/`_write_last_run`,
+  `read_last_backup_summary`) called from a `run_forever()` loop (the
+  loop itself is untested, matching this project's established
+  convention of only testing a worker's pure logic, e.g.
+  `app/energy_kpi_worker.py`).
+- **`database.DatabaseManager.backup()`** - delegates to
+  `backup_sqlite_database()`.
+- Retention and backup are independent settings - disabling one does
+  not affect the other.
+
+### Tests
+
+`tests/test_historian_maintenance_worker.py` - 34 tests, all passing:
+marker-file round-trip/due-interval logic; retention deletes only
+rows older than the window and never touches `machine_events` or the
+STRING-tag `plc_text_data` table; `backup_sqlite_database()` produces
+a queryable, byte-for-byte-correct copy and does not leak
+`plc_data`/`plc_text_data` tables into a `config.db`-shaped backup;
+preflight's conservative 2x-size formula (explicitly tested against
+the naive alternative to prove the stricter one is what's actually
+used), raises on a missing source database, never creates the
+destination directory itself, and works before that directory exists;
+backup-pruning keeps only the N most recent files per prefix and never
+touches a different prefix; and `run_backup_if_due()` backs up both
+databases independently (one's failure doesn't block the other),
+skips cleanly without deleting or attempting anything when preflight
+fails, never prunes an existing good backup on a skipped attempt, and
+writes/reads back a real JSON summary.
+
+### Verification performed for this checkpoint
+
+Ran `tests/test_historian_maintenance_worker.py` directly - 34/34
+pass. `historian_maintenance_worker.service` confirmed live and
+active (see Part I / service inventory in this checkpoint's report).
+
+### PHASE 18.1a STATUS: PASS (verification reconstructed after the
+fact, evidence-based, not contemporaneously recorded)
+
+---
+
+## Phase 18.1a.1 — Tariff Provenance Correction
+
+**Completed:** date not recorded at the time; reconstructed 2026-08-19
+from implementation evidence during a durability/documentation
+checkpoint, same basis and caveat as Phase 17.2e/18.1a above.
+
+### Objective (from the code's own account)
+
+`engine/energy_tariff.py`'s `tariff_provenance_label()` docstring
+names itself "Phase 18.1a.1" and describes the fix directly: map an
+already-resolved tariff row's own `is_simulated` flag (set once, at
+creation time, by the same Factory Configuration tariff form that
+already sets/clears it) to an explicit `CONFIGURED`/`SIMULATION`
+label - **never** a second, parallel provenance system, and never
+inferred from a proxy such as currency (a MYR tariff is not
+automatically "simulation"; a non-MYR tariff is not automatically
+"real"). A tariff that could not be resolved for the requested scope/
+date (`tariff=None`) returns `None`, never a guessed label - callers
+are expected to leave their own cost/provenance fields "Unavailable"
+in that case, per this project's existing never-fabricate discipline.
+
+### What exists
+
+`TARIFF_PROVENANCE_CONFIGURED`/`TARIFF_PROVENANCE_SIMULATION`
+constants and `tariff_provenance_label()` in `engine/energy_tariff.py`,
+actually consumed by two live engines -
+`engine/opportunity_engine.py` and
+`engine/savings_verification_engine.py` (confirmed by direct
+`grep`, not assumed) - not an orphaned/unused helper.
+
+### Tests
+
+`tests/test_energy_tariff.py::TestTariffProvenanceLabel` - 4 tests:
+`None` tariff returns `None`; `is_simulated=1` returns `SIMULATION`;
+`is_simulated=0` returns `CONFIGURED`; a MYR-currency tariff with
+`is_simulated=0` still returns `CONFIGURED` (proving currency is
+never used as a provenance proxy). Also covered indirectly by
+`tests/test_opportunity_engine.py` and
+`tests/test_savings_verification_engine.py` wherever they exercise
+tariff-dependent code paths.
+
+### Verification performed for this checkpoint
+
+Ran `tests/test_energy_tariff.py` directly - all pass. Confirmed via
+`grep` that both consuming engines actually import and call
+`tariff_provenance_label()`/the provenance constants, not just define
+them.
+
+### PHASE 18.1A.1 STATUS: PASS (verification reconstructed after the
+fact, evidence-based, not contemporaneously recorded)
+
+---
+
+## Reconciliation note — "outstanding" worker installs (Phases 6-12)
+
+Several earlier phase entries in this document (Phase 4 - `To install
+production_simulator.service (still outstanding)`; Phase 6 - `To
+install energy_kpi_worker.service (outstanding)`; Phase 8 - `To
+install baseline_worker.service (outstanding, alongside...)`; Phase 9
+- `To install anomaly_worker.service (alongside...)`; Phase 10 - `To
+install opportunity_worker.service (alongside...)`; Phase 12.2's
+commissioning entry) describe those workers as not yet installed under
+systemd **at the time each of those phases was written**. That
+historical text is left as-is below, since it accurately describes
+state at that point in the project.
+
+**Current state, confirmed live during this checkpoint (2026-08-19):**
+all of `production_simulator.service`, `energy_kpi_worker.service`,
+`baseline_worker.service`, `anomaly_worker.service`,
+`opportunity_worker.service`, plus `savings_verification_worker`,
+`equipment_health_worker`, `asset_performance_worker`,
+`data_health_history_worker`, and `historian_maintenance_worker`, are
+installed, `Restart=always`, and `active (running)` under systemd -
+13 project services total, confirmed via `systemctl status` (see this
+checkpoint's report, item I). None of the "outstanding" installs above
+remain outstanding.
+
+---
+
 ## BACKUP CAPABILITY PREPARED — AUTOMATIC BACKUP DISABLED
 
 **Completed:** 2026-08-19
