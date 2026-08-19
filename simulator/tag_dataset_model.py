@@ -2,11 +2,18 @@ from __future__ import annotations
 from config.environment import get_config_db_path
 
 import random
-import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from simulator import plant_context
+
+# Approximates config/settings.ini's scan_interval (2s) - used only to
+# integrate Energy_kWh realistically from a paired Power_kW-style tag
+# (see _update_real()). Not a hard timing requirement; a 1-cycle lag
+# between the two is imperceptible at this poll rate.
+SIMULATED_TICK_SECONDS = 2.0
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -234,42 +241,12 @@ TAG_PROFILES: dict[str, dict[str, float]] = {
 }
 
 
-def canonical_key(tag_name: str) -> str:
-    """
-    Strip the plant prefix (P01/P02) and instance numbers from a tag
-    name, keeping the equipment-type code and signal name - e.g.
-    "P01.UTILITY.AC01.OutletTemp" -> "UTILITY.AC.OutletTemp". This
-    lets every instance of the same equipment type (AC01/AC02/AC03,
-    or the same equipment once P02 is phased in) share one realistic
-    profile instead of needing one entry per instance. The final
-    token (the signal name, e.g. "Current_L1") is left untouched so
-    per-phase signals like L1/L2/L3 stay distinct.
-    """
-    tokens = tag_name.split(".")[1:]
-
-    if not tokens:
-        return tag_name
-
-    stripped = [
-        re.sub(r"\d+$", "", token) if index < len(tokens) - 1 else token
-        for index, token in enumerate(tokens)
-    ]
-
-    return ".".join(stripped)
-
-
-def instance_key(tag_name: str) -> str:
-    """
-    The specific physical unit a tag belongs to - e.g.
-    "P01.UTILITY.AC01.OutletTemp" -> "P01.UTILITY.AC01". Unlike
-    canonical_key(), instance numbers are kept (AC01 stays AC01, not
-    AC) since each physical unit has its own independent fault state.
-    Exposed at module level (not just as TagDatasetSimulator's
-    internal staticmethod) so the Simulator Control UI page can
-    compute the same key to target a fault command correctly.
-    """
-    parts = tag_name.split(".")
-    return ".".join(parts[:-1]) if len(parts) >= 2 else tag_name
+# canonical_key()/instance_key() now live in simulator/plant_context.py
+# (Phase 5 - that module needs them too, for the Main Incomer aggregation
+# boundary). Re-exported here unchanged so existing callers (the
+# Simulator Control UI page) keep working without a code change.
+canonical_key = plant_context.canonical_key
+instance_key = plant_context.instance_key
 
 
 FAULT_DIRECTION_DOWN = {"pressure", "flow", "level"}
@@ -312,6 +289,32 @@ def _generic_string_value(tag_name: str) -> str:
     return generator(random.Random(tag_name))
 
 
+def _schedule_blended_baseline(profile: dict[str, float], baseline: float, schedule_factor: float, use_wide_anchor: bool) -> float:
+    """Post-Phase-14 follow-up. Convex blend between an anchor and the
+    tag's normal full-load baseline, weighted by schedule_factor
+    (1.0 = anchor unused, returns baseline unchanged). Two anchor
+    choices:
+      - use_wide_anchor=False: profile["low"] itself - correct for
+        equipment whose configured band is a substantial fraction of
+        its own low bound (chiller/chilled water pump/water supply
+        pump/AHU/cold room - unchanged from the original pass).
+      - use_wide_anchor=True: profile["low"] - band, floored at 0 - the
+        SAME floor engine._update_real()'s own trend clamp already
+        uses elsewhere, needed for a narrow-band profile (air
+        compressor Power_kW 22-30, air header Flow 60-100) where
+        profile["low"] alone is too close to the baseline to express a
+        real, "substantially lower" reduction.
+    Always bounded between the anchor and the full baseline - never
+    exceeds either, never produces a negative anchor when
+    profile["low"] >= 0."""
+    if use_wide_anchor:
+        band = profile["high"] - profile["low"]
+        anchor = max(0.0, profile["low"] - band) if band else profile["low"]
+    else:
+        anchor = profile["low"]
+    return anchor + schedule_factor * (baseline - anchor)
+
+
 class _InstanceFaultState:
     """
     One equipment instance's shared fault lifecycle.
@@ -326,12 +329,30 @@ class _InstanceFaultState:
     generalized instead of hand-scripted per equipment type.
     """
 
-    def __init__(self, rng: random.Random) -> None:
+    def __init__(
+        self,
+        rng: random.Random,
+        efficiency_factor: float = 1.0,
+        deterioration_eligible: bool = False,
+    ) -> None:
         self._rng = rng
         self.phase = "dormant"
         self._remaining = 0
         self._span = 1
         self.just_entered_fault = False
+
+        # Item 2 - stable, independently-seeded per-instance efficiency
+        # jitter (set once at construction, see plant_context.efficiency_factor()).
+        self.efficiency_factor = efficiency_factor
+
+        # Items 3 & 9 - only a fixed seeded subset of instances ever
+        # deteriorate; everything else stays "stable" forever. Eligible
+        # instances start directly in "deteriorating" so predictive-
+        # maintenance-style trends are actually visible in the live
+        # simulator, not just theoretically possible.
+        self.deterioration_eligible = deterioration_eligible
+        self.deterioration_state = "deteriorating" if deterioration_eligible else "stable"
+        self.deterioration_level = 0.0
 
     def advance(self) -> None:
         self.just_entered_fault = False
@@ -402,6 +423,39 @@ class _InstanceFaultState:
         self._remaining = self._span
         return True
 
+    def advance_deterioration(self, tick_seconds: float) -> None:
+        """
+        Advances the wear accumulator for eligible instances currently
+        in "deteriorating" state. tick_seconds is scaled by
+        plant_context.DETERIORATION_TIME_ACCELERATION_FACTOR - a
+        SIMULATION-ONLY multiplier that only affects how fast this
+        internal 0.0-1.0 level advances, never real historian
+        timestamps or any other tag's timing.
+        """
+        if not self.deterioration_eligible or self.deterioration_state != "deteriorating":
+            return
+
+        simulated_seconds = tick_seconds * plant_context.DETERIORATION_TIME_ACCELERATION_FACTOR
+        self.deterioration_level = min(
+            1.0,
+            self.deterioration_level + simulated_seconds / plant_context.DETERIORATION_FULL_LIFE_SECONDS,
+        )
+
+    def force_recover_deterioration(self) -> bool:
+        """
+        Manually resets wear to zero and marks the instance "recovered" -
+        mirrors force_start()/force_recover()'s existing manual-override
+        pattern. Represents a maintenance intervention resetting the
+        equipment's condition. No UI wires this yet (Phase 23's
+        scenario-control page is the eventual caller) - just the hook.
+        """
+        if self.deterioration_level <= 0.0 and self.deterioration_state != "deteriorating":
+            return False
+
+        self.deterioration_state = "recovered"
+        self.deterioration_level = 0.0
+        return True
+
 
 class TagDatasetSimulator:
     """
@@ -435,6 +489,33 @@ class TagDatasetSimulator:
             self._instance_key(tag["tag_name"]): tag["tag_name"]
             for tag in self._tags
             if tag["data_type"] == "BOOL" and tag["measurement"] == "running"
+        }
+
+        # Phase 5 - production_batches read once per update_values()
+        # cycle (item 1: direct DB read, no snapshot layer), keyed by
+        # the production-linked instance's tag-naming instance_key.
+        self._production_state: dict[str, dict[str, Any]] = {}
+
+        # Post-Phase-14 cleanup - shift_definitions read once per
+        # update_values() cycle, same convention as _production_state
+        # above. False until the first cycle runs (never guesses "in shift").
+        self._within_shift: bool = False
+
+        # Phase 5 - Main Incomer aggregation boundary (item 6),
+        # precomputed once since self._tags never changes after
+        # _load_tags(). plant ("p01"/"p02") -> its Main Incomer's own
+        # Power_kW tag name, and the explicit list of other tags whose
+        # current values sum into it.
+        all_tag_names = [tag["tag_name"] for tag in self._tags]
+        self._main_incomer_tag_by_plant: dict[str, str] = {
+            plant_context.plant_of(plant_context.instance_key(tag_name)): tag_name
+            for tag_name in all_tag_names
+            if tag_name.endswith("ELEC.MAIN.Power_kW")
+        }
+        self._main_incomer_power_tags: set[str] = set(self._main_incomer_tag_by_plant.values())
+        self._main_incomer_contributing_by_plant: dict[str, list[str]] = {
+            plant: plant_context.main_incomer_contributing_tags(all_tag_names, plant)
+            for plant in self._main_incomer_tag_by_plant
         }
 
         self._initialize_state()
@@ -541,7 +622,9 @@ class TagDatasetSimulator:
             if instance_key not in self._instances:
                 seed = random.Random(instance_key).random()
                 self._instances[instance_key] = _InstanceFaultState(
-                    random.Random(int(seed * 1_000_000))
+                    random.Random(int(seed * 1_000_000)),
+                    efficiency_factor=plant_context.efficiency_factor(instance_key),
+                    deterioration_eligible=plant_context.deterioration_eligible(instance_key),
                 )
 
             self._values[tag["tag_name"]] = self._initial_value(tag)
@@ -572,29 +655,135 @@ class TagDatasetSimulator:
     def _update_real(
         self,
         tag: dict[str, Any],
-        severity: float,
+        instance: _InstanceFaultState,
+        previous_values: dict[str, Any],
     ) -> float:
+        tag_name = tag["tag_name"]
         unit = tag["unit"]
-        current = self._values[tag["tag_name"]]
+        measurement = tag["measurement"]
+        current = self._values[tag_name]
+        severity = instance.severity()
 
         if unit in MONOTONIC_UNITS:
+            if unit == "kWh":
+                # Item 6 (related improvement) - integrate the now-
+                # realistic paired Power_kW-style tag instead of a flat
+                # random bump, so "today's kWh" actually means
+                # something. Reads previous_values (last cycle's
+                # already-committed figure) rather than this cycle's,
+                # so ordering never matters regardless of which REAL
+                # tag happens to be processed first in this pass.
+                inst_key = plant_context.instance_key(tag_name)
+                power_value = None
+                for suffix in ("Power_kW", "CompressorPower", "FanPower", "BlowerPower", "MotorPower"):
+                    power_value = previous_values.get(f"{inst_key}.{suffix}")
+                    if power_value is not None:
+                        break
+
+                if power_value is not None:
+                    increment = max(0.0, power_value) * (SIMULATED_TICK_SECONDS / 3600.0)
+                    return round(current + increment, 4)
+
             increment = self._rng.uniform(0.001, 0.05)
             return round(current + increment, 3)
 
-        profile = self._profile(tag["tag_name"], unit)
-        baseline = (profile["low"] + profile["high"]) / 2
+        profile = self._profile(tag_name, unit)
+        canonical = canonical_key(tag_name)
+
+        # Item 5 - outdoor ambient tracks a diurnal target instead of a
+        # flat baseline; everything else keeps its configured band.
+        if canonical == "ENV.Temperature":
+            baseline = plant_context.ambient_target_temperature(datetime.now())
+        elif canonical == "ENV.Humidity":
+            baseline = plant_context.ambient_target_humidity(datetime.now())
+        else:
+            baseline = (profile["low"] + profile["high"]) / 2
+
+            # Post-Phase-14 cleanup - continuous-duty utility equipment
+            # (chiller/chilled water pump/water supply pump/AHU/cold
+            # room/air compressor/air header) settles toward a
+            # genuinely LOWER, never-zero baseline outside production
+            # hours/weekends: a convex blend between a lower anchor and
+            # the tag's full-load baseline, weighted by the schedule
+            # factor - this shifts the REVERSION EQUILIBRIUM itself. An
+            # earlier version applied this as a separate additive push
+            # term instead (mirroring production_push's own shape) -
+            # live testing caught it bottoming out at the trend clamp
+            # floor (0 kW) regardless of the intended factor, since the
+            # push magnitude could exceed the [low-band, high+band]
+            # clamp entirely (see FACTORY_AI_DEVELOPMENT_STATUS.md).
+            # Anchoring on profile["low"] itself works for equipment
+            # whose TAG_PROFILES band is a substantial fraction of its
+            # own low bound (chiller/pump/AHU/cold room); it does NOT
+            # for a narrow-band profile (air compressor Power_kW 22-30,
+            # air header Flow 60-100) - blending toward profile["low"]
+            # alone there only ever produces a shallow ~15-20% dip, not
+            # a "substantially lower" one. SCHEDULE_WIDE_ANCHOR_PREFIXES
+            # opts those into the WIDER anchor (profile["low"] - band,
+            # floored at 0 - the SAME floor the trend clamp below
+            # already respects) instead - still bounded, never zero,
+            # just genuinely lower. Caught during the follow-up
+            # consistency review (air compressor Power_kW was barely
+            # moving off-hours despite its RunStatus being mostly 0).
+            if measurement in plant_context.PRODUCTION_LOAD_SENSITIVE_MEASUREMENTS:
+                schedule_factor = plant_context.schedule_load_factor(canonical, datetime.now(), self._within_shift)
+                if schedule_factor is not None and schedule_factor < 1.0:
+                    use_wide_anchor = canonical.startswith(plant_context.SCHEDULE_WIDE_ANCHOR_PREFIXES)
+                    baseline = _schedule_blended_baseline(profile, baseline, schedule_factor, use_wide_anchor)
+
+            # Follow-up - air_header Flow/Pressure (the previously
+            # disclosed gap): same mechanism, keyed by measurement type
+            # instead of the power/current/speed set, since Flow/
+            # Pressure need their OWN, DIFFERENT fractions under the
+            # same equipment prefix (see
+            # plant_context.air_header_schedule_factor()'s own
+            # docstring). Deliberately a separate elif (not folded into
+            # the block above) so PRODUCTION_LOAD_SENSITIVE_MEASUREMENTS
+            # itself never needs to grow to cover "flow"/"pressure" -
+            # zero risk of accidentally schedule-adjusting WATER.WSP.Flow/
+            # UTILITY.CHWP.Flow, whose canonical prefixes already match
+            # SCHEDULE_OFF_HOURS_LOAD_FACTOR entries meant for their OWN
+            # Power_kW only.
+            elif canonical.startswith(plant_context.AIR_HEADER_PREFIX) and measurement in plant_context.AIR_HEADER_SCHEDULE_SENSITIVE_MEASUREMENTS:
+                schedule_factor = plant_context.air_header_schedule_factor(measurement, datetime.now(), self._within_shift)
+                if schedule_factor is not None and schedule_factor < 1.0:
+                    baseline = _schedule_blended_baseline(profile, baseline, schedule_factor, use_wide_anchor=True)
+
         band = profile["high"] - profile["low"]
 
+        # Item 8 - different physical quantities settle at different
+        # speeds; multiplies the configured revert rate rather than
+        # replacing it.
+        revert = profile["revert"] * plant_context.response_speed_multiplier(tag_name, measurement)
         noise = self._rng.uniform(-profile["noise"], profile["noise"])
-        reversion = (baseline - current) * profile["revert"]
+        reversion = (baseline - current) * revert
 
-        direction = (
-            -1
-            if tag["measurement"] in FAULT_DIRECTION_DOWN
-            else 1
-        )
-
+        direction = -1 if measurement in FAULT_DIRECTION_DOWN else 1
         fault_push = direction * severity * band * 0.35
+
+        # Item 5 - modest humidity-assisted, temperature-dominant HVAC
+        # demand push on the AHU's fan power.
+        environmental_push = 0.0
+        if canonical == "HVAC.AHU.FanPower":
+            plant = tag_name.split(".")[0]
+            outdoor_temp = self._values.get(f"{plant}.ENV01.Temperature", plant_context.AMBIENT_BASE_TEMP_C)
+            outdoor_humidity = self._values.get(f"{plant}.ENV01.Humidity", plant_context.AMBIENT_BASE_HUMIDITY_PCT)
+            environmental_push = plant_context.hvac_demand_push_fraction(outdoor_temp, outdoor_humidity) * band * 0.3
+
+        # Items 3 & 9 - only eligible, currently-deteriorating instances
+        # get a slow upward drift on their genuine wear indicators.
+        deterioration_push = 0.0
+        if instance.deterioration_state == "deteriorating" and plant_context.is_wear_sensitive_tag(tag_name):
+            deterioration_push = instance.deterioration_level * plant_context.DETERIORATION_MAX_DRIFT_FRACTION * band
+
+        # Item 4 - a production-linked instance with no running batch
+        # relaxes its power/current/speed toward an idle level instead
+        # of sitting at full-load values while genuinely idle.
+        production_push = 0.0
+        if measurement in plant_context.PRODUCTION_LOAD_SENSITIVE_MEASUREMENTS:
+            inst_key = plant_context.instance_key(tag_name)
+            if plant_context.is_production_linked_instance(inst_key) and inst_key not in self._production_state:
+                production_push = -(1.0 - plant_context.IDLE_LOAD_FACTOR) * (baseline - profile["low"])
 
         # A sustained fault otherwise keeps compounding fault_push cycle
         # after cycle with nothing to cap it, drifting to physically
@@ -606,14 +795,36 @@ class TagDatasetSimulator:
         # just not an absurd one - then add noise afterwards, so a
         # "maxed out" plateau still jitters like a real sensor instead
         # of reading bit-for-bit identical every cycle.
-        trend = current + reversion + fault_push
+        trend = current + reversion + fault_push + environmental_push + deterioration_push + production_push
         lower_bound = profile["low"] - band
         if profile["low"] >= 0:
             lower_bound = max(0.0, lower_bound)
         upper_bound = profile["high"] + band
         trend = min(max(trend, lower_bound), upper_bound)
 
-        return round(trend + noise, 3)
+        value = trend + noise
+
+        # Item 2 - stable per-instance efficiency jitter on the specific
+        # signals it plausibly affects (never applied to Main Incomer's
+        # own Power_kW, which is computed separately - see
+        # _update_main_incomer_power()).
+        if measurement in {"power", "current"}:
+            value *= instance.efficiency_factor
+
+        # A clamped trend sitting right at 0 (e.g. an idle production
+        # instance - see production_push above, or a fault_push-driven
+        # excursion) can still be nudged slightly negative by noise.
+        # Power/current draw can never be genuinely negative, so floor
+        # it by tag-name suffix rather than the tags.measurement
+        # classification alone - at least one tag in the live dataset
+        # (WT.RO01.Power_kW) is mis-classified as measurement=
+        # "pressure" rather than "power" (a pre-existing metadata
+        # inference quirk, not touched here), which would otherwise
+        # slip past a measurement-only guard.
+        if tag_name.endswith(("Power_kW", "MotorPower", "FanPower", "CompressorPower", "BlowerPower", "Current")):
+            value = max(0.0, value)
+
+        return round(value, 3)
 
     def _update_bool(
         self,
@@ -625,12 +836,34 @@ class TagDatasetSimulator:
         if is_alarm_style:
             return 1 if severity >= 0.6 else 0
 
-        current = self._values[tag["tag_name"]]
+        tag_name = tag["tag_name"]
+        current = self._values[tag_name]
 
         if tag["measurement"] == "running":
             # Mostly running; drops out while faulted/recovering.
             if severity >= 0.6:
                 return 0
+
+            # Item 4 - a production-linked instance's RunStatus now
+            # reflects real production_batches state (Phase 4's
+            # authoritative source) instead of independent random noise.
+            inst_key = plant_context.instance_key(tag_name)
+            if plant_context.is_production_linked_instance(inst_key):
+                return 1 if inst_key in self._production_state else 0
+
+            # Post-Phase-14 cleanup - air compressors genuinely stop
+            # most of the time outside production hours (compressed-air
+            # demand is almost entirely production-driven), rather than
+            # staying in the generic ~99.8%-always-on branch below.
+            # Chiller/pump/AHU/cold-room RunStatus is deliberately
+            # UNCHANGED (falls through to the always-on branch) - those
+            # are genuinely continuous-duty systems; only their load
+            # level shifts (see schedule_push in _update_real()).
+            canonical = canonical_key(tag_name)
+            if plant_context.is_schedule_stoppable_canonical(canonical):
+                on_probability = plant_context.schedule_stoppable_on_probability(datetime.now(), self._within_shift)
+                return 1 if self._rng.random() < on_probability else 0
+
             return 1 if self._rng.random() > 0.002 else 0
 
         # Generic status bit (door/defrost/etc.) - rare toggle.
@@ -647,6 +880,30 @@ class TagDatasetSimulator:
     ) -> int:
         tag_name = tag["tag_name"]
         current = self._values[tag_name]
+
+        # Item 4 - Filling Machine's GoodCount/RejectCount are the one
+        # case where a discrete item count genuinely makes sense
+        # (containers filled), so they're derived from the real running
+        # batch's good_quantity/reject_quantity (litres/kg) divided by
+        # its own current ContainerSize reading - not from an
+        # independent increment. Holds its last value while idle
+        # (no running batch) rather than resetting to 0, so Live Data
+        # doesn't flicker between batches. Other production equipment
+        # (Mill/Disperser/Mixer) has no such tag at all - discrete
+        # counts don't make engineering sense for them, per explicit
+        # scope confirmation.
+        if tag_name.endswith((".GoodCount", ".RejectCount")):
+            inst_key = plant_context.instance_key(tag_name)
+            state = self._production_state.get(inst_key)
+
+            if state is not None:
+                container_size = self._values.get(f"{inst_key}.ContainerSize") or 1.0
+                if container_size <= 0:
+                    container_size = 1.0
+                quantity = state["good_quantity"] if tag_name.endswith(".GoodCount") else state["reject_quantity"]
+                return int(quantity / container_size)
+
+            return current
 
         # Start counters ("...StartCount"/"...Starts") should track the
         # instance's own running-status BOOL, not be decoupled from it -
@@ -685,33 +942,74 @@ class TagDatasetSimulator:
 
         return "None"
 
+    def _update_main_incomer_power(self) -> None:
+        """
+        Item 6 - Main Incomer Power_kW is NOT an independently-noisy
+        signal like every other REAL tag; it's a pure aggregation of
+        this cycle's already-finalized contributing end-load tags (see
+        plant_context.main_incomer_contributing_tags(), the explicit
+        include/exclude boundary) plus one unmetered base-load term.
+        Called after the REAL/BOOL pass so every contributor already
+        holds its final value for this cycle.
+        """
+        now = datetime.now()
+
+        for plant, main_tag in self._main_incomer_tag_by_plant.items():
+            contributing = self._main_incomer_contributing_by_plant.get(plant, [])
+            end_load_sum = sum(self._values.get(t, 0.0) for t in contributing)
+            base_load = plant_context.plant_base_load_kw(plant, now, self._rng)
+            self._values[main_tag] = round(end_load_sum + base_load, 2)
+
     def update_values(self) -> None:
         self._apply_pending_commands()
 
+        # Item 1 - one direct DB read per cycle, no snapshot layer.
+        # Degrades to {} (no production context) if production_batches
+        # doesn't exist yet on this database - see
+        # plant_context.get_production_state().
+        self._production_state = plant_context.get_production_state(self.database_path)
+
+        # Post-Phase-14 cleanup - one direct read of shift_definitions
+        # per cycle (same "no snapshot layer" convention as the
+        # production-state read directly above), cached for this
+        # cycle's REAL/BOOL passes to consult without a DB round-trip
+        # per tag. Degrades to False (never guesses "in shift") if no
+        # shift is configured - see plant_context.is_within_active_shift().
+        self._within_shift = plant_context.is_within_active_shift(self.database_path, datetime.now())
+
         for instance in self._instances.values():
             instance.advance()
+            instance.advance_deterioration(SIMULATED_TICK_SECONDS)
 
         # Snapshotted before any of this cycle's updates, so
         # _update_int() can compare a running-status BOOL's value from
         # before this cycle against its value after (set in the first
-        # pass below) to detect a genuine 0->1 transition.
+        # pass below) to detect a genuine 0->1 transition, and so
+        # _update_real()'s Energy_kWh integration always reads a stable
+        # "last cycle" Power_kW regardless of tag processing order.
         previous_values = dict(self._values)
 
-        # Two passes: REAL/BOOL tags are finalized for this cycle
-        # first, so the second pass's INT tags (specifically start
-        # counters, see _update_int()) can safely read a sibling
-        # running-status BOOL's before/after values regardless of
-        # which tag name happens to sort first alphabetically.
+        # Three passes: REAL/BOOL tags are finalized for this cycle
+        # first (except each plant's Main Incomer Power_kW, held back -
+        # see below), so the second pass's INT tags (start counters)
+        # can safely read a sibling running-status BOOL's before/after
+        # values, and so the third pass can aggregate this cycle's
+        # already-finalized contributing loads into Main Incomer
+        # Power_kW before anything downstream (its own Energy_kWh, next
+        # cycle) needs it.
         for tag in self._tags:
             tag_name = tag["tag_name"]
             instance = self._instances[self._instance_key(tag_name)]
-            severity = instance.severity()
             data_type = tag["data_type"]
 
             if data_type == "REAL":
-                self._values[tag_name] = self._update_real(tag, severity)
+                if tag_name in self._main_incomer_power_tags:
+                    continue
+                self._values[tag_name] = self._update_real(tag, instance, previous_values)
             elif data_type == "BOOL":
-                self._values[tag_name] = self._update_bool(tag, severity)
+                self._values[tag_name] = self._update_bool(tag, instance.severity())
+
+        self._update_main_incomer_power()
 
         for tag in self._tags:
             tag_name = tag["tag_name"]
@@ -725,9 +1023,21 @@ class TagDatasetSimulator:
                 )
             elif data_type == "STRING" and tag_name.endswith(".AlarmCode"):
                 self._values[tag_name] = self._update_string(severity)
-            # Other STRING tags (BatchNumber/ProductCode/MaterialID/...)
-            # keep their _initial_value() forever - informational, not
-            # fault-linked, so there's nothing to update each cycle.
+            elif data_type == "STRING" and tag_name.endswith((".BatchNumber", ".ProductCode")):
+                # Item 4 - production-linked instances reflect the real
+                # running batch's code/product instead of a value fixed
+                # forever at simulator startup. Non-production STRING
+                # tags (MaterialID/SourceTank/...) are untouched below.
+                inst_key = self._instance_key(tag_name)
+                if plant_context.is_production_linked_instance(inst_key):
+                    state = self._production_state.get(inst_key)
+                    if tag_name.endswith(".BatchNumber"):
+                        self._values[tag_name] = state["batch_code"] if state else "IDLE"
+                    else:
+                        self._values[tag_name] = state["product_code"] if state else "IDLE"
+            # Other STRING tags (MaterialID/SourceTank/...) keep their
+            # _initial_value() forever - informational, not fault- or
+            # production-linked, so there's nothing to update each cycle.
 
     def get_tags(self) -> list[tuple[str, str, Any]]:
         return [

@@ -42,6 +42,65 @@ class ConfigManager:
         )
 
     @property
+    def historian_retention_days(self) -> int:
+        """
+        How many days of raw plc_data history to keep - the value
+        Phase 18's audit found sitting in settings.ini but never
+        actually read by any code. Now the single source of truth
+        DatabaseManager.cleanup() is called with (see
+        app/historian_maintenance_worker.py) - never a hardcoded
+        constant elsewhere.
+        """
+        return self.config.getint("DATABASE", "retention_days", fallback=90)
+
+    @property
+    def historian_retention_check_interval_hours(self) -> float:
+        return self.config.getfloat(
+            "HISTORIAN_MAINTENANCE", "retention_check_interval_hours", fallback=24.0
+        )
+
+    @property
+    def historian_backup_enabled(self) -> bool:
+        """
+        Backup readiness follow-up - fallback is deliberately False, not
+        True. If the [HISTORIAN_MAINTENANCE] section or this key is ever
+        missing (a fresh settings.ini, a partial upgrade), automatic
+        backup must stay OFF by default - it must never be silently
+        switched on by an application startup or a software upgrade.
+        Enabling it is always an explicit, intentional edit to
+        settings.ini.
+        """
+        return self.config.getboolean(
+            "HISTORIAN_MAINTENANCE", "backup_enabled", fallback=False
+        )
+
+    @property
+    def historian_backup_interval_hours(self) -> float:
+        return self.config.getfloat(
+            "HISTORIAN_MAINTENANCE", "backup_interval_hours", fallback=24.0
+        )
+
+    @property
+    def historian_backup_destination_dir(self) -> Path:
+        return (
+            self.project_root
+            / self.config.get("HISTORIAN_MAINTENANCE", "backup_destination_dir", fallback="backups")
+        )
+
+    @property
+    def historian_backup_retention_count(self) -> int:
+        return self.config.getint(
+            "HISTORIAN_MAINTENANCE", "backup_retention_count", fallback=7
+        )
+
+    @property
+    def historian_backup_minimum_free_reserve_bytes(self) -> int:
+        gigabytes = self.config.getfloat(
+            "HISTORIAN_MAINTENANCE", "backup_minimum_free_reserve_gb", fallback=5.0
+        )
+        return int(gigabytes * (1000 ** 3))
+
+    @property
     def fins_ip(self):
         return self.config["FINS"]["ip"]
 

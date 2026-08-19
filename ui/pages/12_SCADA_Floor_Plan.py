@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ui.health_data import BAND_BADGE_COLORS
 from ui.scada_floor_plan_data import (
     SEVERITY_COLOR,
     SEVERITY_DOT,
@@ -115,44 +116,88 @@ severity_colors_json = json.dumps(SEVERITY_COLOR)
 severity_text_json = json.dumps(SEVERITY_TEXT)
 severity_label_json = json.dumps(SEVERITY_LABEL)
 severity_dot_json = json.dumps(SEVERITY_DOT)
+# Phase 12.4 - the SAME shared Equipment Health band-color contract
+# every other page uses (ui.health_data.BAND_BADGE_COLORS) - never a
+# second hardcoded palette, and deliberately never mixed with
+# SEVERITY_COLOR above (item 13 - health state is not a PLC alarm).
+health_band_colors_json = json.dumps(BAND_BADGE_COLORS)
 
 page_html = f"""
 <style>
-  body {{ margin:0; background:#0d1117; color:#e6edf3; font-family:{FONT_STACK}; }}
+  /* Light palette (default) - this component renders in its own iframe
+     via st.components.v1.html(), so it has no access to Streamlit's
+     actual light/dark theme setting. prefers-color-scheme (the OS/
+     browser preference) is used instead, which matches how Streamlit
+     itself picks a theme when left on "auto" (the default, and what
+     this app uses - no [theme] section in .streamlit/config.toml) -
+     so both the native page chrome and this component agree. Only the
+     chrome (backgrounds/borders/muted text) is themed here - the
+     status colors (SEVERITY_COLOR/TEXT/DOT/LABEL, alarm=red/warning=
+     amber/normal=green/...) are deliberately fixed regardless of
+     theme, same as the top-of-page legend outside this component. */
+  :root {{
+    --scada-bg: #ffffff;
+    --scada-text: #1f2328;
+    --scada-muted: #57606a;
+    --scada-border: #d0d7de;
+    --scada-toolbar-btn-bg: #f6f8fa;
+    --scada-row-border: #eaeef2;
+    --scada-heading: #24292f;
+    --scada-stale-bg: #fff8c5;
+    --scada-stale-text: #9a6700;
+    --scada-stale-border: #d4a72c;
+    --scada-card-border: rgba(0, 0, 0, 0.15);
+  }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{
+      --scada-bg: #0d1117;
+      --scada-text: #e6edf3;
+      --scada-muted: #8a8f98;
+      --scada-border: #30363d;
+      --scada-toolbar-btn-bg: #21262d;
+      --scada-row-border: #1c2128;
+      --scada-heading: #c9d1d9;
+      --scada-stale-bg: #3a2a06;
+      --scada-stale-text: #f5a524;
+      --scada-stale-border: #f5a524;
+      --scada-card-border: rgba(255, 255, 255, 0.15);
+    }}
+  }}
+  body {{ margin:0; background:var(--scada-bg); color:var(--scada-text); font-family:{FONT_STACK}; }}
   .scada-toolbar {{ display:flex; gap:8px; align-items:center; margin-bottom:12px; }}
   .scada-toolbar button {{
-    background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px;
-    padding:6px 16px; font-size:13px; cursor:pointer; font-family:{FONT_STACK};
+    background:var(--scada-toolbar-btn-bg); color:var(--scada-text); border:1px solid var(--scada-border);
+    border-radius:6px; padding:6px 16px; font-size:13px; cursor:pointer; font-family:{FONT_STACK};
   }}
-  .scada-toolbar button.active {{ background:#3d5afe; border-color:#3d5afe; }}
+  .scada-toolbar button.active {{ background:#3d5afe; color:#ffffff; border-color:#3d5afe; }}
   #scada-stale-banner {{
-    display:none; background:#3a2a06; color:#f5a524; border:1px solid #f5a524;
+    display:none; background:var(--scada-stale-bg); color:var(--scada-stale-text); border:1px solid var(--scada-stale-border);
     border-radius:6px; padding:8px 12px; margin-bottom:12px; font-size:13px;
   }}
   .scada-layout {{ display:flex; gap:24px; align-items:flex-start; }}
   .scada-floor {{ flex:3; }}
   .scada-boards {{ flex:1; min-width:260px; }}
-  .scada-zone {{ border:1px solid #30363d; border-radius:8px; padding:10px 12px; margin-bottom:12px; }}
-  .scada-zone-title {{ font-size:12px; color:#8a8f98; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; }}
+  .scada-zone {{ border:1px solid var(--scada-border); border-radius:8px; padding:10px 12px; margin-bottom:12px; }}
+  .scada-zone-title {{ font-size:12px; color:var(--scada-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; }}
   .scada-zone-cards {{ display:flex; flex-wrap:wrap; gap:8px; }}
   .scada-card {{
     padding:8px 14px; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;
-    border:1px solid rgba(255,255,255,0.15); user-select:none;
+    border:1px solid var(--scada-card-border); user-select:none;
   }}
   .scada-card:hover {{ filter:brightness(1.1); }}
-  #scada-detail {{ border-top:1px solid #30363d; padding-top:12px; margin-top:8px; }}
+  #scada-detail {{ border-top:1px solid var(--scada-border); padding-top:12px; margin-top:8px; }}
   .scada-detail-row {{
     display:grid; grid-template-columns:14px 1fr 110px 150px; gap:12px;
-    align-items:center; padding:6px 0; border-bottom:1px solid #21262d; font-size:13px;
+    align-items:center; padding:6px 0; border-bottom:1px solid var(--scada-row-border); font-size:13px;
   }}
-  .scada-detail-header {{ color:#8a8f98; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }}
+  .scada-detail-header {{ color:var(--scada-muted); font-size:11px; text-transform:uppercase; letter-spacing:0.05em; }}
   .scada-dot {{ width:10px; height:10px; border-radius:50%; }}
-  .scada-board-heading {{ font-size:12px; font-weight:700; color:#c9d1d9; margin:8px 0 2px; }}
+  .scada-board-heading {{ font-size:12px; font-weight:700; color:var(--scada-heading); margin:8px 0 2px; }}
   .scada-board-row {{
     display:flex; justify-content:space-between; align-items:baseline; padding:2px 0;
-    border-bottom:1px solid #1c2128; font-size:12px;
+    border-bottom:1px solid var(--scada-row-border); font-size:12px;
   }}
-  .scada-board-row .label {{ font-size:11.5px; color:#8a8f98; }}
+  .scada-board-row .label {{ font-size:11.5px; color:var(--scada-muted); }}
   .scada-board-row .value {{ font-size:12.5px; font-weight:600; white-space:nowrap; }}
 </style>
 
@@ -161,14 +206,14 @@ page_html = f"""
 <div class="scada-toolbar">
   <button id="scada-tab-p01" class="active" onclick="scadaSetPlant('p01')">P01</button>
   <button id="scada-tab-p02" onclick="scadaSetPlant('p02')">P02</button>
-  <span id="scada-asof" style="font-size:12px;color:#8a8f98;margin-left:8px;">waiting for live data...</span>
+  <span id="scada-asof" style="font-size:12px;color:var(--scada-muted);margin-left:8px;">waiting for live data...</span>
 </div>
 
 <div class="scada-layout">
   <div class="scada-floor">
     {shell_html}
     <div id="scada-detail">
-      <div id="scada-detail-body" style="font-size:13px;color:#8a8f98;">
+      <div id="scada-detail-body" style="font-size:13px;color:var(--scada-muted);">
         Click any equipment above to see its live tag values.
       </div>
     </div>
@@ -176,7 +221,7 @@ page_html = f"""
   <div class="scada-boards">
     <div style="font-weight:700;font-size:13px;">⚡ P01 Main Incomer</div>
     <div id="scada-board-p01"></div>
-    <hr style="border-color:#30363d;margin:12px 0;">
+    <hr style="border-color:var(--scada-border);margin:12px 0;">
     <div style="font-weight:700;font-size:13px;">⚡ P02 Main Incomer</div>
     <div id="scada-board-p02"></div>
   </div>
@@ -187,6 +232,7 @@ const SEVERITY_COLOR = {severity_colors_json};
 const SEVERITY_TEXT = {severity_text_json};
 const SEVERITY_LABEL = {severity_label_json};
 const SEVERITY_DOT = {severity_dot_json};
+const HEALTH_BAND_COLOR = {health_band_colors_json};
 
 let scadaCurrentPlant = "p01";
 let scadaSelectedEquipment = null;
@@ -249,6 +295,12 @@ function scadaRenderBoard(plant, board) {{
     (board.pf !== null && board.frequency !== null)
       ? scadaFormatNumber(board.pf, 2) + ' / ' + scadaFormatNumber(board.frequency, 1) + ' Hz' : '-');
 
+  html += scadaBoardHeading('Water');
+  html += scadaBoardRow('Today\\'s consumption',
+    board.today_water_m3 !== null ? scadaFormatNumber(board.today_water_m3, 1) + ' m³' : '-');
+  html += scadaBoardRow('Current flow',
+    board.water_flow !== null ? scadaFormatNumber(board.water_flow, 1) + ' m³/h' : '-');
+
   if (board.air_pressure !== null || board.water_pressure !== null) {{
     html += scadaBoardHeading('Utilities');
     if (board.air_pressure !== null) {{
@@ -294,6 +346,30 @@ function scadaRenderDetail(equipmentName) {{
     summary = '<div style="color:#3dd68c;">Everything within configured limits.</div>';
   }}
 
+  // Phase 12.4 - Equipment Health (Phase 12) is a deliberately SEPARATE
+  // engineering assessment from the alarm/warning summary above - never
+  // styled with SEVERITY_COLOR, never implying "no alarm = healthy" or
+  // "an alarm = unhealthy". Reads only what the health worker already
+  // persisted (eq.health, built by ui.health_data - see
+  // ui/scada_floor_plan_data.py's build_equipment_snapshot()).
+  let healthBlock = '';
+  if (eq.health && eq.health.assessed) {{
+    const h = eq.health;
+    const stateColor = HEALTH_BAND_COLOR[h.state] || '#e6e6e6';
+    healthBlock = '<div style="margin:10px 0;padding:8px;border:1px solid var(--scada-border);border-radius:4px;">' +
+      '<div style="font-size:11px;color:var(--scada-muted);text-transform:uppercase;letter-spacing:0.05em;">Equipment Health (separate from the PLC status above)</div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:4px;font-size:13px;align-items:center;">' +
+      '<div>Score: <b>' + scadaEscapeHtml(h.score) + '</b></div>' +
+      '<div><span style="padding:1px 8px;border-radius:3px;background:' + stateColor + ';color:#1a1a1a;font-weight:600;">' + scadaEscapeHtml(h.state) + '</span></div>' +
+      '<div style="color:var(--scada-muted);">Confidence: ' + scadaEscapeHtml(h.confidence) + '</div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--scada-muted);margin-top:4px;">Last assessed: ' + scadaEscapeHtml(h.last_assessed) +
+      ' &nbsp;·&nbsp; See the Equipment Health page for full evidence and history.</div>' +
+      '</div>';
+  }} else {{
+    healthBlock = '<div style="margin:10px 0;font-size:12px;color:var(--scada-muted);">Equipment Health: Not Assessed</div>';
+  }}
+
   let rows = '<div class="scada-detail-row scada-detail-header"><div></div><div>Tag</div>' +
     '<div style="text-align:right;">Value</div><div style="text-align:right;">Updated</div></div>';
   const sortedTags = [...eq.tags].sort((a, b) => a.tag_name.localeCompare(b.tag_name));
@@ -305,11 +381,19 @@ function scadaRenderDetail(equipmentName) {{
       '<div class="scada-dot" style="background:' + SEVERITY_COLOR[tag.severity] + ';"></div>' +
       '<div style="font-family:monospace;font-size:13px;">' + scadaEscapeHtml(tag.tag_name) + '</div>' +
       '<div style="font-weight:600;font-size:13px;text-align:right;">' + scadaEscapeHtml(value) + scadaEscapeHtml(unit) + '</div>' +
-      '<div style="color:#8a8f98;font-size:12px;text-align:right;">' + scadaEscapeHtml(updated) + '</div></div>';
+      '<div style="color:var(--scada-muted);font-size:12px;text-align:right;">' + scadaEscapeHtml(updated) + '</div></div>';
   }}
 
+  let legend = '<div style="display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;padding-top:8px;border-top:1px solid var(--scada-row-border);">';
+  for (const key of ['alarm', 'warning', 'normal', 'not_evaluated', 'no_data']) {{
+    legend += '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--scada-muted);">' +
+      '<div style="width:10px;height:10px;border-radius:50%;background:' + SEVERITY_COLOR[key] + ';"></div>' +
+      scadaEscapeHtml(SEVERITY_LABEL[key]) + '</div>';
+  }}
+  legend += '</div>';
+
   document.getElementById('scada-detail-body').innerHTML =
-    '<h4 style="margin:4px 0 8px;">' + scadaEscapeHtml(eq.display_name) + '</h4>' + summary + rows;
+    '<h4 style="margin:4px 0 8px;">' + scadaEscapeHtml(eq.display_name) + '</h4>' + summary + healthBlock + rows + legend;
 }}
 
 function scadaApplySnapshot(snapshot) {{

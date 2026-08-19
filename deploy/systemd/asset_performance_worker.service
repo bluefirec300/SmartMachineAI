@@ -1,0 +1,15 @@
+[Unit]
+Description=SmartMachineAI Asset Performance Worker
+After=network.target
+
+[Service]
+Type=simple
+User=test
+WorkingDirectory=/home/test/SmartMachineAI
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/test/SmartMachineAI/venv/bin/python -m app.asset_performance_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

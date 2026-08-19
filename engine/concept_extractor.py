@@ -233,6 +233,13 @@ MEASUREMENTS = {
     "voltage": ("voltage", "volts"),
     "power": ("power", "kw", "kilowatt", "power consumption", "power usage", "how much power"),
     "energy": ("energy", "kwh", "energy consumption", "energy usage"),
+    # Deliberately multi-word phrases only, not bare "water" - "water"
+    # alone must stay in equipment_terms so it can still help identify
+    # actual water-related equipment (Water Supply Pump, Water
+    # Treatment System, ...); it's only stripped out (and this
+    # measurement recognized) when paired with a consumption-style word,
+    # matching the same pattern "power"/"energy" already use above.
+    "waterconsumption": ("water consumption", "water usage", "how much water"),
     "flow": ("flow rate", "flowrate", "flow"),
     "level": ("tank level", "level", "how full", "how empty", "fill level"),
     "speed": ("speed", "rpm", "how fast"),

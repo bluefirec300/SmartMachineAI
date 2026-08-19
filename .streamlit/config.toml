@@ -1,0 +1,15 @@
+[server]
+enableStaticServing = true
+
+# Default is 120s: Streamlit keeps a session's state alive for this long
+# after its browser WebSocket disconnects (which a plain page refresh
+# does), and silently reconnects a returning browser to that SAME old
+# session - including whatever login state and sidebar navigation state
+# it had - instead of starting fresh. This is why a plain refresh could
+# show a stale/misordered sidebar even though the underlying page-list
+# code is deterministic: the reconnect was resuming an old, already-
+# rendered session rather than genuinely re-running from a clean start
+# the way a real login does. Setting this to 0 makes every disconnect
+# (including a refresh) drop the old session immediately, so a refresh
+# always requires signing in again and always renders the sidebar fresh.
+disconnectedSessionTTL = 0

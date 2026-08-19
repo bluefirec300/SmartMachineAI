@@ -68,9 +68,23 @@ class ProviderFactory:
                 or "qwen2.5:7b"
             )
 
+            # Same env-var-first pattern as base_url/model above. Left
+            # unset by default so OllamaProvider's own 600s default
+            # applies unchanged - this exists so a slower/faster
+            # deployment can tune it (e.g. a CPU-only dev VM during
+            # commissioning) without touching provider code, never as a
+            # routing/architecture change.
+            read_timeout_value = cls._environment_value("OLLAMA_READ_TIMEOUT")
+            read_timeout_kwargs = (
+                {"read_timeout": int(read_timeout_value)}
+                if read_timeout_value
+                else {}
+            )
+
             return OllamaProvider(
                 base_url=base_url,
                 model=model,
+                **read_timeout_kwargs,
             )
 
         if selected_provider == "openai":

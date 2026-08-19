@@ -8,6 +8,7 @@ import streamlit as st
 
 from ai.rule_engine import RuleEngine
 from database.database import DatabaseManager
+from engine.energy_kpi_engine import accumulated_positive_delta
 from ui.data_access import CONFIG_DATABASE_PATH
 
 
@@ -154,6 +155,7 @@ def _load_equipment(plant: str) -> list[dict]:
             category = _category_key(row["name"])
             equipment.append(
                 {
+                    "id": row["id"],
                     "name": row["name"],
                     "display_name": row["display_name"],
                     "category": category,
@@ -236,26 +238,34 @@ def group_into_zones(equipment_list: list[dict]) -> list[tuple[str, list[dict]]]
     return zone_groups
 
 
-def _todays_energy_kwh(database: DatabaseManager, tag_name: str) -> float | None:
+def _todays_accumulated_total(database: DatabaseManager, tag_name: str) -> float | None:
     """
-    Energy_kWh is a monotonic running total (never resets), so "today's
-    consumption" is the delta between its value at midnight and now.
+    "Today's consumption" for a monotonic running-total tag (Energy_kWh,
+    the water meter's Total, ...), computed as the sum of every positive
+    increment since midnight - NOT simply last-reading-minus-first, which
+    goes negative the moment the counter resets partway through the day
+    (confirmed happening in practice: a plc_logger/simulator restart
+    re-seeds these counters from a lower baseline, e.g. Energy_kWh
+    dropping from ~1568 to ~989 at 07:00:10 one day, which made the naive
+    subtraction report negative consumption). A decrease between two
+    consecutive readings is treated as exactly that kind of reset and
+    skipped - accumulation just resumes from the new baseline on the next
+    reading, so one reset doesn't undercount everything after it either.
     None if nothing's logged yet today, rather than a misleading 0.
+
+    Delegates to engine.energy_kpi_engine.accumulated_positive_delta()
+    (Phase 6) - that's the same reset-safe logic, generalized to an
+    arbitrary [start, end] window instead of only "midnight to now", so
+    this and the Phase 6 KPI engine share one implementation rather than
+    two copies that could drift apart.
     """
     now = datetime.now()
-    hours_since_midnight = max(
-        0.05, (now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600
-    )
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
-        rows = database.get_history(tag=tag_name, hours=hours_since_midnight, limit=3000)
+        return accumulated_positive_delta(database, tag_name, midnight, now)
     except Exception:
         return None
-
-    if len(rows) < 2:
-        return None
-
-    return rows[-1]["value"] - rows[0]["value"]
 
 
 def build_equipment_snapshot(
@@ -280,9 +290,17 @@ def build_equipment_snapshot(
     if latest_text is None:
         latest_text = database.get_latest_text_all()
 
+    # Phase 12.4 - ONE bulk health lookup for every equipment item on
+    # this plant's floor plan, never one query per tile (item 10). Reads
+    # only the already-persisted equipment_health_worker output via the
+    # shared ui.health_data contract - no scoring, no historian access.
+    from ui import health_data as hd
+    health_by_equipment_id = hd.get_latest_health_by_equipment_ids([e["id"] for e in equipment_list])
+
     snapshot: dict[str, dict] = {}
     for equipment in equipment_list:
         evaluated = _equipment_status(equipment, latest, latest_text, rule_engine)
+        health_record = health_by_equipment_id.get(equipment["id"])
         snapshot[evaluated["name"]] = {
             "display_name": evaluated["display_name"],
             "code": evaluated["code"],
@@ -299,6 +317,17 @@ def build_equipment_snapshot(
                 }
                 for tag in evaluated["tags"]
             ],
+            # Equipment Health (Phase 12) - deliberately separate from
+            # the alarm/warning "tags"/"overall_severity" above (item 13:
+            # health state is never a PLC alarm). None (not a dict) means
+            # "Not Assessed" - never silently treated as healthy.
+            "health": {
+                "score": hd.score_text(health_record),
+                "state": hd.state_text(health_record),
+                "confidence": hd.confidence_text(health_record),
+                "last_assessed": hd.format_timestamp(health_record["computed_at"]) if health_record else None,
+                "assessed": health_record is not None,
+            },
         }
     return snapshot
 
@@ -322,7 +351,7 @@ def build_board_snapshot(
     evaluated = [_equipment_status(eq, latest, latest_text, rule_engine) for eq in equipment_list]
 
     incomer_prefix = f"{plant.upper()}.ELEC.MAIN"
-    today_kwh = _todays_energy_kwh(database, f"{incomer_prefix}.Energy_kWh")
+    today_kwh = _todays_accumulated_total(database, f"{incomer_prefix}.Energy_kWh")
     power = latest.get(f"{incomer_prefix}.Power_kW")
     pf = latest.get(f"{incomer_prefix}.PF")
     freq = latest.get(f"{incomer_prefix}.Frequency")
@@ -337,6 +366,10 @@ def build_board_snapshot(
     air_flow = latest.get(f"{plant.upper()}.UTILITY.AIRHDR01.Flow")
     water_pressure = latest.get(f"{plant.upper()}.WATER.SYS01.HeaderPressure")
     water_level = latest.get(f"{plant.upper()}.WATER.SYS01.TankLevel")
+
+    water_meter_prefix = f"{plant.upper()}.WATER.MTR01"
+    today_water_m3 = _todays_accumulated_total(database, f"{water_meter_prefix}.Total")
+    water_flow = latest.get(f"{water_meter_prefix}.Flow")
 
     alarm_count = sum(1 for e in evaluated if e["overall_severity"] == "alarm")
     warning_count = sum(1 for e in evaluated if e["overall_severity"] == "warning")
@@ -355,6 +388,8 @@ def build_board_snapshot(
         "air_flow": air_flow["value"] if air_flow else None,
         "water_pressure": water_pressure["value"] if water_pressure else None,
         "water_level": water_level["value"] if water_level else None,
+        "today_water_m3": today_water_m3,
+        "water_flow": water_flow["value"] if water_flow else None,
         "alarm_count": alarm_count,
         "warning_count": warning_count,
         "normal_count": normal_count,

@@ -55,6 +55,77 @@ class Candidate:
         return {"tag": self.tag.to_dict(), "score": self.score, "reasons": list(self.reasons)}
 
 @dataclass
+class EquipmentCandidate:
+    """One equipment-level candidate from IndustrialQueryEngine.resolve_equipment() -
+    Phase 15's equipment-only counterpart to Candidate (which is tag-level).
+    equipment_score is the same 0.0-1.0 scale _equipment_score() already
+    produces (never the *40-scaled tag-ranking score)."""
+    equipment_name: str
+    equipment_display_name: str
+    instance_key: str
+    plant: str
+    equipment_score: float
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "equipment_name": self.equipment_name,
+            "equipment_display_name": self.equipment_display_name,
+            "instance_key": self.instance_key,
+            "plant": self.plant,
+            "equipment_score": self.equipment_score,
+        }
+
+@dataclass
+class EquipmentResolution:
+    """Result of IndustrialQueryEngine.resolve_equipment() - mirrors
+    QueryResult's status/candidates/confidence shape so callers can reuse
+    the same "resolved / clarification_required / no_match" handling and
+    the same numbered-menu rendering pattern, just at equipment
+    granularity instead of tag granularity."""
+    question: str
+    status: str
+    instance_key: str = ""
+    equipment_name: str = ""
+    equipment_display_name: str = ""
+    plant: str = ""
+    confidence: float = 0.0
+    message: str = ""
+    candidates: list[EquipmentCandidate] = field(default_factory=list)
+    # True when the question named ANY equipment-like term at all (even
+    # if resolution failed/was ambiguous) - lets a caller distinguish
+    # "you named something I couldn't resolve" (surface a clarification)
+    # from "you named nothing" (safe to fall back to prior session
+    # context for a bare follow-up question). See app/ask.py's
+    # AskEngine._answer_equipment_interpretation() - Phase 15's
+    # "explicit new equipment always overrides previous context, never
+    # silently reused" rule depends on this distinction.
+    had_equipment_terms: bool = False
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "question": self.question,
+            "status": self.status,
+            "instance_key": self.instance_key,
+            "equipment_name": self.equipment_name,
+            "equipment_display_name": self.equipment_display_name,
+            "plant": self.plant,
+            "confidence": self.confidence,
+            "message": self.message,
+            "candidates": [c.to_dict() for c in self.candidates],
+            "had_equipment_terms": self.had_equipment_terms,
+        }
+
+@dataclass
+class EquipmentComparisonResolution:
+    """Phase 15 multi-entity comparison resolution - two INDEPENDENTLY
+    resolved EquipmentResolution objects, never one resolver call re-run
+    against the whole question twice (see
+    IndustrialQueryEngine.resolve_equipment_pair())."""
+    question: str
+    status: str  # "resolved" | "clarification_required" | "no_match" | "could_not_split" | "duplicate_entity"
+    entity_a: "EquipmentResolution | None" = None
+    entity_b: "EquipmentResolution | None" = None
+    message: str = ""
+
+@dataclass
 class QueryResult:
     question: str
     status: str

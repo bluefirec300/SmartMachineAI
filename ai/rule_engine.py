@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +207,24 @@ class RuleEngine:
             result["message"] = (
                 f"{tag_name} cannot be evaluated because "
                 f"its value is not numeric."
+            )
+
+            return result
+
+        # Phase 16.1 correctness fix: float(current) does NOT raise for
+        # NaN/+-inf, so without this explicit check a NaN/infinite
+        # reading fell through to the alarm/warning comparisons below -
+        # every comparison against NaN is False, and every comparison
+        # against +-inf is trivially True/False depending on direction -
+        # so a NaN reading was previously silently reported as
+        # "within_limits"/"normal" instead of "invalid_value". This is
+        # the same objective-invalidity check the new Data Health engine
+        # (engine/data_health_engine.py) uses, kept in sync deliberately.
+        if math.isnan(value) or math.isinf(value):
+            result["condition"] = "invalid_value"
+            result["message"] = (
+                f"{tag_name} cannot be evaluated because "
+                f"its value ({value}) is not a valid finite number."
             )
 
             return result

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from config.environment import get_machine_db_path
+from database.backup import backup_sqlite_database
 
 
 DB_PATH = get_machine_db_path()
@@ -285,14 +286,7 @@ class DatabaseManager:
         return deleted_rows
 
     def backup(self, destination: Path | str) -> Path:
-        destination_path = Path(destination).resolve()
-        destination_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with self.get_connection() as source:
-            with sqlite3.connect(destination_path) as target:
-                source.backup(target)
-
-        return destination_path
+        return backup_sqlite_database(self.db_path, destination)
 
 
 _default_db = DatabaseManager()

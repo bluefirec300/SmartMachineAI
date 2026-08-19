@@ -133,6 +133,7 @@ class TestSnapshotBuilders(unittest.TestCase):
         expected_keys = {
             "today_kwh", "power_kw", "pf", "frequency", "currents", "voltages",
             "air_pressure", "air_flow", "water_pressure", "water_level",
+            "today_water_m3", "water_flow",
             "alarm_count", "warning_count", "normal_count",
             "not_evaluated_count", "no_data_count", "total",
         }

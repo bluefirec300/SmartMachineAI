@@ -327,6 +327,149 @@ def send_simulator_command(instance_key: str, action: str) -> None:
         connection.close()
 
 
+def get_plants() -> list[dict[str, Any]]:
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+
+    try:
+        rows = connection.execute("SELECT id, code, name FROM plants ORDER BY code").fetchall()
+    finally:
+        connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_anomalies(
+    status: str | None = "OPEN",
+    plant_code: str | None = None,
+    category: str | None = None,
+    severity: str | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """
+    Phase 9 anomaly/engineering-finding rows. status=None means "All"
+    (both OPEN and RESOLVED - the full recurrence history); a specific
+    status filters to exactly that. Read-only - Phase 9's write path is
+    app/anomaly_worker.py only, never the UI.
+    """
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+
+    query = """
+        SELECT a.*, p.code AS plant_code, p.name AS plant_name
+        FROM anomalies a
+        JOIN plants p ON p.id = a.plant_id
+        WHERE 1 = 1
+    """
+    params: list[Any] = []
+
+    if status:
+        query += " AND a.status = ?"
+        params.append(status)
+    if plant_code:
+        query += " AND p.code = ?"
+        params.append(plant_code)
+    if category:
+        query += " AND a.category = ?"
+        params.append(category)
+    if severity:
+        query += " AND a.severity = ?"
+        params.append(severity)
+
+    query += " ORDER BY a.last_seen DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = connection.execute(query, params).fetchall()
+    finally:
+        connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_anomaly_filter_options() -> dict[str, list[str]]:
+    """Distinct category/severity values actually present, for filter dropdowns."""
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+
+    try:
+        categories = [r[0] for r in connection.execute("SELECT DISTINCT category FROM anomalies ORDER BY category").fetchall()]
+        severities = [r[0] for r in connection.execute("SELECT DISTINCT severity FROM anomalies ORDER BY severity").fetchall()]
+    finally:
+        connection.close()
+
+    return {"categories": categories, "severities": severities}
+
+
+def get_opportunities(
+    status: str | None = "NEW",
+    plant_code: str | None = None,
+    category: str | None = None,
+    priority: str | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """
+    Phase 10 energy-opportunity rows. status=None means "All" (both
+    NEW and DISMISSED). Read-only - Phase 10's write path is
+    app/opportunity_worker.py (creation/update) and
+    dismiss_opportunity() below (the one allowed UI write), never
+    anything else in the UI.
+    """
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+
+    query = """
+        SELECT o.*, p.code AS plant_code, p.name AS plant_name
+        FROM energy_opportunities o
+        JOIN plants p ON p.id = o.plant_id
+        WHERE 1 = 1
+    """
+    params: list[Any] = []
+
+    if status:
+        query += " AND o.status = ?"
+        params.append(status)
+    if plant_code:
+        query += " AND p.code = ?"
+        params.append(plant_code)
+    if category:
+        query += " AND o.category = ?"
+        params.append(category)
+    if priority:
+        query += " AND o.priority = ?"
+        params.append(priority)
+
+    query += " ORDER BY o.priority_score DESC, o.last_updated DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = connection.execute(query, params).fetchall()
+    finally:
+        connection.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_opportunity_filter_options() -> dict[str, list[str]]:
+    connection = sqlite3.connect(CONFIG_DATABASE_PATH)
+
+    try:
+        categories = [r[0] for r in connection.execute("SELECT DISTINCT category FROM energy_opportunities ORDER BY category").fetchall()]
+        priorities = [r[0] for r in connection.execute("SELECT DISTINCT priority FROM energy_opportunities ORDER BY priority").fetchall()]
+    finally:
+        connection.close()
+
+    return {"categories": categories, "priorities": priorities}
+
+
+def dismiss_opportunity_action(opportunity_id: int, reason: str, comment: str | None) -> None:
+    """The one write action Phase 10's UI is allowed to perform - see
+    engine.opportunity_engine.dismiss_opportunity() for the deterministic
+    logic (validates reason, never deletes, preserves evidence/links)."""
+    from engine.opportunity_engine import dismiss_opportunity
+
+    dismiss_opportunity(CONFIG_DATABASE_PATH, opportunity_id, reason, comment)
+
+
 def get_simulator_command_log(limit: int = 20) -> list[dict[str, Any]]:
     connection = sqlite3.connect(CONFIG_DATABASE_PATH)
     connection.row_factory = sqlite3.Row

@@ -3,11 +3,24 @@ from __future__ import annotations
 import argparse
 import re
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from ai.ai_provider import AIProvider
+from ai.context_builder import (
+    build_comparison_ai_context,
+    build_equipment_ai_context,
+    build_factory_ai_context,
+)
 from ai.event_store import EventStore
+from ai.grounding_guard import check_grounding
+from ai.interpretation_intent import classify_interpretation_intent
+from ai.interpretation_prompt_builder import (
+    build_deterministic_fallback,
+    build_interpretation_prompt,
+)
 from ai.prompt_builder import build_prompt, format_machine_context
 from ai.root_cause_engine import RootCauseEngine, format_root_cause_result
 from ai.rule_engine import RuleEngine, format_rule_results
@@ -16,6 +29,27 @@ from config.environment import get_config_db_path, get_machine_db_path
 from database.database import DatabaseManager
 from engine.industrial_query_engine import IndustrialQueryEngine
 from rag.retrieval import search_chunks
+
+
+@dataclass
+class AskResult:
+    """
+    Phase 15 - additive structured result contract. AskEngine.ask()
+    keeps returning a plain string unchanged (existing callers - the
+    CLI REPL, tests - are unaffected). AskEngine.ask_structured() is the
+    NEW entry point the UI uses, so it can reliably show resolved
+    equipment / View Evidence / source timestamps without re-parsing a
+    plain string.
+    """
+
+    answer: str
+    intent: str
+    resolved_entities: list[dict[str, Any]] = field(default_factory=list)
+    structured_context: dict[str, Any] | None = None
+    provider: str | None = None
+    # "grounded" | "violation_detected" | "not_checked" | "not_applicable"
+    grounding_status: str = "not_applicable"
+    fallback_used: bool = False
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,14 +85,11 @@ FACTORY_WIDE_EVENTS_LIMIT = 30
 # chitchat, factory-wide timeline fallback) skip the LLM entirely and
 # answer straight from deterministic code - the production/SCADA-
 # facing default (instant, no multi-minute wait for a structured
-# listing that doesn't need paraphrasing). Briefly flipped to False to
-# test genuinely routing these through Ollama too (confirmed working:
-# ~90s for a chitchat greeting, correctly phrased, no hallucinated
-# facts) - reverted back to True on reflection, since forcing a
-# multi-minute wait onto answers that were already fully correct
-# didn't actually buy anything. current_data/root_cause/trend/
-# threshold/timeline-for-one-tag were never affected either way -
-# those already always go through real Ollama.
+# listing that doesn't need paraphrasing). current_data/root_cause/
+# trend/threshold/timeline-for-one-tag/comparison were never affected
+# either way - those already always go through real Ollama regardless
+# of this flag.
+#
 INSTANT_ANSWERS_SKIP_LLM = True
 
 CHITCHAT_RESPONSES = {
@@ -81,6 +112,19 @@ CHITCHAT_RESPONSES = {
 FACTORY_TOTAL_POWER_TAG = "P01.ELEC.MAIN.Power_kW"
 FACTORY_TOTAL_POWER_EQUIPMENT = "Main Incomer MAIN (P01)"
 FACTORY_TOTAL_POWER_EQUIPMENT_SCORE_FLOOR = 0.4
+
+# Same fallback pattern as the power tag above, for "what is the
+# factory/total water consumption" - the Building Water Meter is the
+# single point that measures total incoming water for the whole plant,
+# same role as the Main Incomer for power. Unlike power (instantaneous,
+# answered via the normal current-value path), the underlying tag here
+# is a monotonic running total - see _answer_factory_water_consumption()
+# for why that needs its own dedicated handling instead of just
+# reusing _answer_for_tag(). No equipment-score floor constant here
+# (unlike the power fallback above) - see the dispatch site in
+# _resolve_and_answer() for why that check isn't used for this one.
+FACTORY_WATER_METER_TAG = "P01.WATER.MTR01.Total"
+FACTORY_WATER_METER_EQUIPMENT = "Building Water Meter MTR01 (P01)"
 
 # Same "how confident is the equipment match" floor as the power
 # fallback above, reused for "equipment_status" questions ("is
@@ -328,22 +372,35 @@ def _format_equipment_status(equipment_display_name, statuses):
                 "equipment's tags, so nothing can be flagged as abnormal."
             )
     else:
+        # Each blank line before a header/summary line below is
+        # required, not cosmetic - _format_status_line() renders each
+        # reading as a Markdown bullet ("- tag (value): message"), and
+        # a plain (non-bulleted) line immediately following a bullet
+        # with no blank line between them gets treated as a lazy
+        # continuation of that SAME bullet by the Markdown renderer,
+        # not a new line - confirmed live: without these blank lines,
+        # the next section's header/equipment name was silently
+        # swallowed onto the end of the previous bullet's text.
         if alarms:
             lines.append(f"IN ALARM ({len(alarms)}):")
             lines.extend(_format_status_line(s) for s in alarms)
         if warnings:
+            lines.append("")
             lines.append(f"IN WARNING ({len(warnings)}):")
             lines.extend(_format_status_line(s) for s in warnings)
         if normal:
+            lines.append("")
             lines.append(f"{len(normal)} other reading(s) normal.")
 
     if not_evaluated:
+        lines.append("")
         lines.append(
             f"({len(not_evaluated)} reading(s) have no configured "
             "threshold, so aren't included above.)"
         )
 
     if no_data:
+        lines.append("")
         lines.append(
             f"({len(no_data)} tag(s) have no historian data recorded yet.)"
         )
@@ -382,7 +439,20 @@ def _format_factory_status(statuses):
     for status in alarms + warnings:
         by_equipment.setdefault(status["equipment"], []).append(status)
 
-    for equipment_display_name, equipment_statuses in sorted(by_equipment.items()):
+    # The blank line appended before each equipment header (except the
+    # first, which already has one from the intro block above) is
+    # required, not cosmetic - _format_status_line() renders each
+    # reading as a Markdown bullet ("- tag (value): message"), and a
+    # plain (non-bulleted) header line immediately following a bullet
+    # with no blank line between them gets treated as a lazy
+    # continuation of that SAME bullet by the Markdown renderer, not a
+    # new line - confirmed live: without this, the NEXT equipment's
+    # name was silently swallowed onto the end of the PREVIOUS
+    # equipment's last bullet, garbling which reading belonged to which
+    # equipment.
+    for index, (equipment_display_name, equipment_statuses) in enumerate(sorted(by_equipment.items())):
+        if index > 0:
+            lines.append("")
         lines.append(f"{equipment_display_name}:")
         lines.extend(
             _format_status_line(s)
@@ -394,7 +464,7 @@ def _format_factory_status(statuses):
     return "\n".join(lines)
 
 
-def _format_candidate_menu(candidates, status):
+def _format_candidate_menu(candidates, status, lead_sentence=None):
     """
     Render a numbered "which one did you mean" menu.
 
@@ -402,8 +472,17 @@ def _format_candidate_menu(candidates, status):
     (clarification_required) from "nothing matched confidently, here
     are the closest guesses" (no_match) - the wording is honest about
     which situation the operator is in.
+
+    lead_sentence, when given, replaces the plain templated header
+    below with an LLM-phrased counter-question (see
+    AskEngine._phrase_clarifying_question()) - the numbered list itself
+    is always built the exact same deterministic way either way, so a
+    missing/failed AI call just falls back to the plain header, never
+    to a broken or empty menu.
     """
-    if status == "clarification_required":
+    if lead_sentence:
+        header = lead_sentence
+    elif status == "clarification_required":
         header = "I found more than one possible match. Which one did you mean?"
     else:
         header = (
@@ -588,19 +667,22 @@ def _format_event_history(tag, events):
 
 def _format_documentation_excerpts(chunks, brand, model):
     """
-    Render retrieved manufacturer-documentation excerpts.
-
-    Only called with non-empty chunks - the caller skips this
-    section entirely when nothing was found, so the LLM never sees a
-    "documentation" header with nothing behind it.
+    Render retrieved manufacturer-documentation excerpts as plain
+    facts - no LLM-only instructions here. This becomes part of
+    machine_context, which _deterministic_answer() shows verbatim to
+    the operator whenever the AI call is unavailable/fails, so it must
+    only ever contain real, confirmed facts - see
+    ai.prompt_builder.build_prompt()'s root_cause branch for the
+    citation-discipline instructions that used to live here (moved out
+    2026-08-15 after they leaked into a user-visible fallback answer:
+    an AI-provider timeout caused this exact "IMPORTANT: your
+    Recommended checks must..." instruction text to be shown directly
+    to the operator instead of ever reaching a model).
 
     Each excerpt is labeled with its page number when one is known
     (chunks stored before page tracking existed, or from the raw
     --text CLI import path, have page_number=None and are labeled
-    "page unknown" instead) - the instruction below only ever asks the
-    model to *relay* a page number that's already right there in the
-    excerpt it's citing, never to work one out or guess, the same
-    grounding discipline as every other fact in this prompt.
+    "page unknown" instead).
     """
     lines = [f"Manufacturer documentation ({brand} {model}):"]
 
@@ -608,18 +690,6 @@ def _format_documentation_excerpts(chunks, brand, model):
         page = chunk.get("page_number")
         page_label = f"page {page}" if page else "page unknown"
         lines.append(f"- ({chunk['source']}, {page_label}) {chunk['chunk_text']}")
-
-    lines.append(
-        "IMPORTANT: your \"Recommended checks\" must name the specific "
-        "components, part names, or procedures mentioned above (not "
-        "generic advice) wherever the documentation above covers the "
-        "current situation. When you use an excerpt with a known page "
-        "number, cite it in parentheses right after that point, e.g. "
-        "\"(see page 42)\" - only cite a page number that was actually "
-        "given to you above, never a number you work out or guess "
-        "yourself, and never cite a page for an excerpt marked "
-        "\"page unknown\"."
-    )
 
     return "\n".join(lines)
 
@@ -902,6 +972,53 @@ class AskEngine:
 
         return _format_factory_wide_events(events, label)
 
+    def _answer_factory_water_consumption(self, question: str) -> str:
+        """
+        "What is the factory water consumption today" - a dedicated,
+        deterministic answer rather than routing FACTORY_WATER_METER_TAG
+        through the normal _answer_for_tag() current-value path used
+        for the power fallback. That tag is a monotonic running total
+        (it only ever counts up), so its raw current reading answers
+        "how much has this meter ever recorded," not "how much today" -
+        the exact pitfall already found and fixed for the SCADA Floor
+        Plan's info board (see
+        ui.scada_floor_plan_data._todays_accumulated_total's docstring
+        for the full story, including the counter-reset case). Reuses
+        that same reset-safe accumulation helper instead of duplicating
+        the logic here.
+        """
+        from ui.scada_floor_plan_data import _todays_accumulated_total
+
+        today_m3 = _todays_accumulated_total(self.database, FACTORY_WATER_METER_TAG)
+
+        if today_m3 is None:
+            deterministic_text = (
+                f"No water consumption has been logged yet today for {FACTORY_WATER_METER_EQUIPMENT}."
+            )
+        else:
+            deterministic_text = (
+                f"{FACTORY_WATER_METER_EQUIPMENT} has used {format_number(today_m3)} m³ "
+                "of water so far today."
+            )
+
+        if self.ai_provider is None:
+            return deterministic_text
+
+        prompt = (
+            "You are SmartMachineAI, a factory monitoring assistant. "
+            f'A user asked: "{question}"\n\n'
+            "Here is the exact, already-verified answer to relay to them. "
+            "This number has already been computed correctly - do not "
+            f"recompute it, second-guess it, or change it:\n\n{deterministic_text}\n\n"
+            "Rephrase this as a natural, conversational reply. Keep every "
+            "fact, name, and number exactly as given above."
+        )
+
+        try:
+            return self.ai_provider.generate(prompt)
+        except Exception:
+            return deterministic_text
+
     def _answer_for_tag(
         self,
         tag_name: str,
@@ -933,6 +1050,8 @@ class AskEngine:
             [rule_result],
             include_normal=True,
         )
+
+        has_documentation = False
 
         if intent == "root_cause":
             root_cause_result = (
@@ -974,6 +1093,7 @@ class AskEngine:
                 )
 
                 if chunks:
+                    has_documentation = True
                     machine_context = (
                         f"{machine_context}\n\n"
                         f"{_format_documentation_excerpts(chunks, brand, model)}"
@@ -1008,6 +1128,7 @@ class AskEngine:
             machine_context=machine_context,
             rule_context=rule_context,
             route=route,
+            has_documentation=has_documentation,
         )
 
         if self.ai_provider is None:
@@ -1218,6 +1339,40 @@ class AskEngine:
                     question,
                 )
 
+        # "What is the factory/total water consumption (today)" - same
+        # fallback shape as the power block above, but intentionally
+        # narrower: only current_data (the exact question this exists
+        # for). trend/threshold/comparison against a running-total tag
+        # don't have an obviously well-defined meaning yet the way they
+        # do for instantaneous power, so they're left unhandled here
+        # rather than guessed at - a genuinely ambiguous water question
+        # of those kinds still falls through to the normal candidate
+        # menu below, same as before this existed.
+        #
+        # Deliberately NOT gated on an equipment_score floor the way
+        # the power block above is - found live that it backfires here:
+        # once "water"/"consumption" are stripped, the only leftover
+        # equipment_term is often "factory", which scores a spuriously
+        # high match (1.0) against the Main Incomer tags because their
+        # own stored description text is literally "Factory active
+        # power"/"Factory cumulative energy" - an accidental word
+        # collision specific to this dataset's descriptions, unrelated
+        # to water at all. Since there's only one Building Water Meter
+        # per plant, and this measurement only fires here when the
+        # deterministic matcher couldn't already resolve a specific
+        # real tag on its own (status != "resolved" below), always
+        # answering with the factory-wide meter is safe - mirrors how
+        # the power fallback above also unconditionally defaults to
+        # P01's Main Incomer once its own (more reliable, for power)
+        # floor check passes.
+        if (
+            result.intent == "current_data"
+            and result.concepts
+            and result.concepts.measurement == "waterconsumption"
+            and (result.status != "resolved" or not result.selected_tag)
+        ):
+            return self._answer_factory_water_consumption(question)
+
         if result.status != "resolved" or not result.selected_tag:
             return None
 
@@ -1360,10 +1515,339 @@ class AskEngine:
 
         return corrected
 
+    def _phrase_clarifying_question(self, question: str, candidates, status: str) -> str | None:
+        """
+        Ask the LLM for a short, natural counter-question when the
+        deterministic matcher (even after _try_correct_question()'s
+        retry) still couldn't confidently resolve a question - replaces
+        _format_candidate_menu()'s plain templated header ("I found
+        more than one possible match...") with something that reads
+        like a real clarifying question, per explicit request: "mix
+        mode" - understood questions stay instant/deterministic
+        (INSTANT_ANSWERS_SKIP_LLM above), but a genuinely unresolved
+        one should get real LLM help, not just a bare numbered list.
+
+        Deliberately narrow, same discipline as _try_correct_question():
+        the LLM is only ever asked to phrase ONE framing sentence around
+        a candidate list that deterministic code already built - it is
+        explicitly told not to list the options itself and not to
+        invent any option beyond what's given, so it can't introduce an
+        equipment/tag that doesn't actually exist. The numbered list
+        underneath is always the same deterministic
+        _format_candidate_menu() output regardless of whether this call
+        succeeds, and the numbered-reply mechanism in ask() is
+        completely unaffected either way - a number still selects a
+        candidate, and any non-numeric reply still abandons the menu
+        and is treated as a fresh question, so the operator can answer
+        "with or without the numbered answer" as requested.
+        """
+        if self.ai_provider is None:
+            return None
+
+        equipment_labels = sorted(
+            {
+                candidate.tag.equipment_display_name or candidate.tag.equipment_name or "unknown equipment"
+                for candidate in candidates
+            }
+        )
+        options_text = ", ".join(equipment_labels)
+
+        if status == "clarification_required":
+            situation = "found more than one real match and needs the operator to say which one they meant"
+        else:
+            situation = (
+                "could not confidently match the question to any configured tag, "
+                "and is about to show the closest guesses it found"
+            )
+
+        prompt = (
+            "A factory-monitoring assistant just tried to answer this operator "
+            f'question: "{question}"\n\n'
+            f"It {situation}. The possible options are: {options_text}.\n\n"
+            "Write ONE short, friendly sentence asking the operator to clarify "
+            "which one they meant, or to describe their question a bit more "
+            "specifically. Do not list the options yourself - they will be shown "
+            "separately as a numbered list right after your sentence - and do not "
+            "invent or mention any option that isn't in that list. Output ONLY "
+            "that one sentence, nothing else - no explanation, no quotes, no "
+            "preamble."
+        )
+
+        try:
+            raw = self.ai_provider.generate(prompt).strip()
+        except Exception:
+            return None
+
+        sentence = raw.splitlines()[0].strip().strip('"').strip("'") if raw else ""
+
+        return sentence or None
+
     def _remember(self, question: str) -> None:
         """Append a resolved question to self._history, capped to the last HISTORY_TURNS_KEPT."""
         self._history.append(question)
         self._history = self._history[-HISTORY_TURNS_KEPT:]
+
+    # -----------------------------------------------------------------
+    # Phase 15 - AI Interpretation Layer. Everything below is additive:
+    # it never touches the tag-level pipeline above, and only runs when
+    # ai.interpretation_intent.classify_interpretation_intent() has
+    # already identified a domain question (see ask_structured()).
+    # -----------------------------------------------------------------
+
+    def _render_interpretation_answer(
+        self, context: dict[str, Any], intent: str, question: str, resolved_entities: list[dict[str, Any]],
+    ) -> AskResult:
+        """
+        Shared tail for every Phase 15 answer path: build the prompt,
+        call the provider (never more than once per question), run the
+        deterministic grounding guard, and fall back to the plain
+        rendered context whenever the provider is unavailable/fails OR
+        the guard finds an unsupported authoritative claim. The
+        deterministic backend remains the source of truth either way.
+        """
+        # Phase 16.3 - deterministic UNAVAILABLE short-circuit. When the
+        # question materially depends on current telemetry AND Data
+        # Confidence is UNAVAILABLE for this equipment, skip the AI
+        # provider call entirely (never fabricate a current-condition
+        # assessment, and never spend a multi-minute LLM call on a
+        # question this deterministic check already knows cannot be
+        # reliably answered - item P). Naturally scoped to single-
+        # equipment contexts only: build_comparison_ai_context() and
+        # build_factory_ai_context() never attach a top-level
+        # context["data_health"] (each COMPARISON entity carries its own,
+        # nested, handled per-entity; FACTORY_SUMMARY never resolves a
+        # single equipment's telemetry at all).
+        data_health = context.get("data_health")
+        requires_confidence = context.get("request", {}).get("requires_telemetry_confidence", False)
+
+        if (
+            data_health is not None
+            and requires_confidence
+            and data_health.get("confidence_status") == "UNAVAILABLE"
+        ):
+            reason = (
+                "Data Confidence is UNAVAILABLE for this equipment, so a reliable "
+                "current-condition assessment cannot be made. "
+                + ("; ".join(data_health.get("reasons", [])) or "No deterministic reason was recorded.")
+            )
+            return AskResult(
+                answer=build_deterministic_fallback(context, intent, reason),
+                intent=intent,
+                resolved_entities=resolved_entities,
+                structured_context=context,
+                provider=None,
+                grounding_status="not_applicable",
+                fallback_used=True,
+            )
+
+        provider_name = self.ai_provider.provider if self.ai_provider is not None else None
+
+        if self.ai_provider is None:
+            return AskResult(
+                answer=build_deterministic_fallback(context, intent, self.ai_error),
+                intent=intent,
+                resolved_entities=resolved_entities,
+                structured_context=context,
+                provider=None,
+                grounding_status="not_applicable",
+                fallback_used=True,
+            )
+
+        prompt = build_interpretation_prompt(context, intent, question)
+
+        try:
+            answer = self.ai_provider.generate(prompt)
+        except Exception as error:
+            return AskResult(
+                answer=build_deterministic_fallback(context, intent, str(error)),
+                intent=intent,
+                resolved_entities=resolved_entities,
+                structured_context=context,
+                provider=provider_name,
+                grounding_status="not_applicable",
+                fallback_used=True,
+            )
+
+        grounding = check_grounding(answer, context, intent)
+
+        if not grounding.checked:
+            return AskResult(
+                answer=answer,
+                intent=intent,
+                resolved_entities=resolved_entities,
+                structured_context=context,
+                provider=provider_name,
+                grounding_status="not_checked",
+                fallback_used=False,
+            )
+
+        if not grounding.grounded:
+            # Do NOT pass the unsupported claim through silently - prefer
+            # the deterministic fallback (the approved correction).
+            reason = "an unsupported claim was detected and removed: " + "; ".join(grounding.violations)
+            return AskResult(
+                answer=build_deterministic_fallback(context, intent, reason),
+                intent=intent,
+                resolved_entities=resolved_entities,
+                structured_context=context,
+                provider=provider_name,
+                grounding_status="violation_detected",
+                fallback_used=True,
+            )
+
+        return AskResult(
+            answer=answer,
+            intent=intent,
+            resolved_entities=resolved_entities,
+            structured_context=context,
+            provider=provider_name,
+            grounding_status="grounded",
+            fallback_used=False,
+        )
+
+    def _format_equipment_clarification(self, resolution) -> str:
+        """Numbered menu for an ambiguous/no-match Phase 15 equipment
+        resolution - deliberately separate from _format_candidate_menu()
+        above (that one renders TAG candidates; this renders EQUIPMENT
+        candidates), but the same plain, deterministic style."""
+        if resolution.status == "clarification_required":
+            header = resolution.message
+        else:
+            header = "I couldn't confidently match that to any configured equipment."
+
+        lines = [header, ""]
+
+        seen: set[str] = set()
+        index = 0
+
+        for candidate in resolution.candidates:
+            if candidate.instance_key in seen:
+                continue
+            seen.add(candidate.instance_key)
+            index += 1
+            lines.append(f"{index}. {candidate.equipment_display_name} ({candidate.instance_key})")
+
+            if index >= 5:
+                break
+
+        lines.extend(["", "Could you name the specific equipment (including plant, if it exists in more than one)?"])
+
+        return "\n".join(lines)
+
+    def _answer_equipment_interpretation(
+        self, question: str, intent: str, context_equipment: str | None,
+    ) -> AskResult:
+        resolution = self.query_engine.resolve_equipment(question)
+
+        if resolution.status == "resolved":
+            instance_key = resolution.instance_key
+        elif resolution.had_equipment_terms:
+            # The question named something equipment-like but it could
+            # not be confidently/uniquely resolved - surface that
+            # directly. Never silently fall back to a DIFFERENT
+            # equipment from a prior turn just because this one is
+            # ambiguous (Correction 1/3: an explicit new equipment
+            # reference always overrides previous context, even when
+            # that new reference itself needs clarifying).
+            return AskResult(
+                answer=self._format_equipment_clarification(resolution),
+                intent=intent,
+                resolved_entities=[c.to_dict() for c in resolution.candidates[:5]],
+                grounding_status="not_applicable",
+            )
+        elif context_equipment:
+            # A bare follow-up naming no equipment at all - reuse the
+            # CALLER-supplied, session-scoped equipment context
+            # (Correction 1: never a shared/global AskEngine attribute -
+            # the caller owns this value, e.g. in st.session_state).
+            instance_key = context_equipment
+        else:
+            return AskResult(
+                answer=self._format_equipment_clarification(resolution),
+                intent=intent,
+                resolved_entities=[c.to_dict() for c in resolution.candidates[:5]],
+                grounding_status="not_applicable",
+            )
+
+        context = build_equipment_ai_context(
+            self.config_database_path, self.database.db_path, instance_key, intent, question=question,
+        )
+
+        return self._render_interpretation_answer(
+            context, intent, question, resolved_entities=[{"instance_key": instance_key}],
+        )
+
+    def _answer_comparison_interpretation(self, question: str) -> AskResult:
+        pair = self.query_engine.resolve_equipment_pair(question)
+
+        if pair.status != "resolved":
+            lines = [pair.message, ""]
+
+            for label, entity in (("First equipment", pair.entity_a), ("Second equipment", pair.entity_b)):
+                if entity is not None and entity.status != "resolved":
+                    lines.append(f"{label}: {self._format_equipment_clarification(entity)}")
+
+            return AskResult(
+                answer="\n".join(lines),
+                intent="COMPARISON",
+                resolved_entities=[],
+                grounding_status="not_applicable",
+            )
+
+        context = build_comparison_ai_context(
+            self.config_database_path, self.database.db_path,
+            pair.entity_a.instance_key, pair.entity_b.instance_key,
+            question=question,
+        )
+
+        return self._render_interpretation_answer(
+            context, "COMPARISON", question,
+            resolved_entities=[
+                {"instance_key": pair.entity_a.instance_key},
+                {"instance_key": pair.entity_b.instance_key},
+            ],
+        )
+
+    def _answer_factory_summary(self, question: str) -> AskResult:
+        context = build_factory_ai_context(
+            self.config_database_path, self.database.db_path, plant_code=None, question=question,
+        )
+
+        return self._render_interpretation_answer(context, "FACTORY_SUMMARY", question, resolved_entities=[])
+
+    def ask_structured(self, question: str, context_equipment: str | None = None) -> AskResult:
+        """
+        Phase 15 entry point. `context_equipment`, when given, is the
+        CALLER's own session-scoped "last discussed equipment"
+        instance_key (e.g. read from st.session_state) - AskEngine
+        itself never stores this across calls, so one browser session's
+        follow-up context can never leak into another's (Correction 1).
+
+        Falls back to the existing ask()/string pipeline UNCHANGED for
+        every question that isn't a recognized Phase 15 domain question
+        (Route A/C - see ai/interpretation_intent.py's module docstring).
+        """
+        intent = classify_interpretation_intent(question)
+
+        if intent is None:
+            answer = self.ask(question)
+            return AskResult(
+                answer=answer,
+                intent="",
+                resolved_entities=[],
+                structured_context=None,
+                provider=self.ai_provider.provider if self.ai_provider is not None else None,
+                grounding_status="not_applicable",
+                fallback_used=self.ai_provider is None,
+            )
+
+        if intent == "FACTORY_SUMMARY":
+            return self._answer_factory_summary(question)
+
+        if intent == "COMPARISON":
+            return self._answer_comparison_interpretation(question)
+
+        return self._answer_equipment_interpretation(question, intent, context_equipment)
 
     def ask(self, question: str) -> str:
         """Answer one operator question and return the final text."""
@@ -1448,7 +1932,9 @@ class AskEngine:
             "question": result.question,
         }
 
-        return _format_candidate_menu(candidates, result.status)
+        lead_sentence = self._phrase_clarifying_question(question, candidates, result.status)
+
+        return _format_candidate_menu(candidates, result.status, lead_sentence=lead_sentence)
 
 
 def main() -> None:

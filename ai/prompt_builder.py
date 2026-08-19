@@ -52,6 +52,7 @@ def build_prompt(
     machine_context,
     rule_context,
     route,
+    has_documentation=False,
 ):
     if route["intent"] == "root_cause":
         structure_instructions = (
@@ -70,6 +71,31 @@ def build_prompt(
             "procedure or specification that isn't in the supplied "
             "excerpts."
         )
+
+        # This instruction is LLM-prompt-only, deliberately never part
+        # of machine_context - it used to live inside
+        # app.ask._format_documentation_excerpts()'s return value,
+        # which is also what _deterministic_answer() shows verbatim to
+        # the operator when the AI call is unavailable/fails, and it
+        # leaked into a real user-visible fallback answer that way
+        # (found 2026-08-15). has_documentation is only True when
+        # documentation excerpts were actually appended to
+        # machine_context, so this never references excerpts that
+        # aren't there.
+        if has_documentation:
+            structure_instructions += (
+                "\n\n"
+                'Your "Recommended checks" must name the specific '
+                "components, part names, or procedures mentioned in "
+                "the documentation excerpts below (not generic "
+                "advice) wherever they cover the current situation. "
+                "When you use an excerpt with a known page number, "
+                'cite it in parentheses right after that point, e.g. '
+                '"(see page 42)" - only cite a page number that was '
+                "actually given to you below, never a number you work "
+                "out or guess yourself, and never cite a page for an "
+                'excerpt marked "page unknown".'
+            )
     elif route["intent"] == "comparison":
         structure_instructions = (
             "Answer using only the confirmed observations below.\n\n"

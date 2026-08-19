@@ -16,6 +16,7 @@ logs/*
 !logs/.gitkeep
 backups/*
 !backups/.gitkeep
+config/active_environment.txt
 
 # Databases and backups
 database/*.db
@@ -39,8 +40,12 @@ config/secrets.json
 # IDE / OS
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
+
+# Third-party CLI binaries fetched locally, not project source
+/cloudflared
 
 # Build / packaging
 build/

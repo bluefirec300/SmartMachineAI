@@ -16,6 +16,7 @@ from config.configuration_manager import ConfigurationManager
 from config.environment import ENVIRONMENT_LABELS, get_active_environment
 from engine.metadata_migrator import infer
 from ui import auth
+from ui import health_data as hd
 from ui.data_access import CONFIG_DATABASE_PATH, get_equipment_list
 
 
@@ -252,6 +253,15 @@ else:
     )
 
     if selected_equipment:
+        # Phase 12.4 (item 7, optional) - a single compact, read-only
+        # health line. Never editable here - Health Score is never a
+        # manually-set equipment field.
+        health = hd.compact_health_context(selected_equipment["id"])
+        if health["assessed"]:
+            st.caption(f"Current Health: {health['state']} · {health['score']} &nbsp;·&nbsp; Confidence: {health['confidence']} &nbsp;·&nbsp; Last assessed: {health['last_assessed']}")
+        else:
+            st.caption("Current Health: Not Assessed")
+
         edit_eq_col, delete_eq_col = st.columns(2)
 
         with edit_eq_col:
