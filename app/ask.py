@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ai.ai_provider import AIProvider
 from ai.context_builder import (
@@ -1596,6 +1596,7 @@ class AskEngine:
 
     def _render_interpretation_answer(
         self, context: dict[str, Any], intent: str, question: str, resolved_entities: list[dict[str, Any]],
+        on_progress: Callable[[str], None] | None = None,
     ) -> AskResult:
         """
         Shared tail for every Phase 15 answer path: build the prompt,
@@ -1604,6 +1605,17 @@ class AskEngine:
         rendered context whenever the provider is unavailable/fails OR
         the guard finds an unsupported authoritative claim. The
         deterministic backend remains the source of truth either way.
+
+        Phase 18 - `on_progress`, if given, is called with a small
+        stage string ("generating_ai" right before the one provider
+        call this method ever makes, "validating" right after it
+        returns and before the grounding check) so a caller (e.g. the
+        Ask AI page) can show an honest status. Entirely optional and
+        UI-agnostic - this file never imports Streamlit. "validating"
+        is only ever emitted here, never for the older ask()/
+        IndustrialQueryEngine pipeline, because that pipeline never
+        calls check_grounding() at all - emitting it there would be
+        dishonest, not just imprecise.
         """
         # Phase 16.3 - deterministic UNAVAILABLE short-circuit. When the
         # question materially depends on current telemetry AND Data
@@ -1655,6 +1667,9 @@ class AskEngine:
 
         prompt = build_interpretation_prompt(context, intent, question)
 
+        if on_progress is not None:
+            on_progress("generating_ai")
+
         try:
             answer = self.ai_provider.generate(prompt)
         except Exception as error:
@@ -1667,6 +1682,9 @@ class AskEngine:
                 grounding_status="not_applicable",
                 fallback_used=True,
             )
+
+        if on_progress is not None:
+            on_progress("validating")
 
         grounding = check_grounding(answer, context, intent)
 
@@ -1736,6 +1754,7 @@ class AskEngine:
 
     def _answer_equipment_interpretation(
         self, question: str, intent: str, context_equipment: str | None,
+        on_progress: Callable[[str], None] | None = None,
     ) -> AskResult:
         resolution = self.query_engine.resolve_equipment(question)
 
@@ -1775,9 +1794,12 @@ class AskEngine:
 
         return self._render_interpretation_answer(
             context, intent, question, resolved_entities=[{"instance_key": instance_key}],
+            on_progress=on_progress,
         )
 
-    def _answer_comparison_interpretation(self, question: str) -> AskResult:
+    def _answer_comparison_interpretation(
+        self, question: str, on_progress: Callable[[str], None] | None = None,
+    ) -> AskResult:
         pair = self.query_engine.resolve_equipment_pair(question)
 
         if pair.status != "resolved":
@@ -1806,16 +1828,24 @@ class AskEngine:
                 {"instance_key": pair.entity_a.instance_key},
                 {"instance_key": pair.entity_b.instance_key},
             ],
+            on_progress=on_progress,
         )
 
-    def _answer_factory_summary(self, question: str) -> AskResult:
+    def _answer_factory_summary(
+        self, question: str, on_progress: Callable[[str], None] | None = None,
+    ) -> AskResult:
         context = build_factory_ai_context(
             self.config_database_path, self.database.db_path, plant_code=None, question=question,
         )
 
-        return self._render_interpretation_answer(context, "FACTORY_SUMMARY", question, resolved_entities=[])
+        return self._render_interpretation_answer(
+            context, "FACTORY_SUMMARY", question, resolved_entities=[], on_progress=on_progress,
+        )
 
-    def ask_structured(self, question: str, context_equipment: str | None = None) -> AskResult:
+    def ask_structured(
+        self, question: str, context_equipment: str | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> AskResult:
         """
         Phase 15 entry point. `context_equipment`, when given, is the
         CALLER's own session-scoped "last discussed equipment"
@@ -1826,10 +1856,32 @@ class AskEngine:
         Falls back to the existing ask()/string pipeline UNCHANGED for
         every question that isn't a recognized Phase 15 domain question
         (Route A/C - see ai/interpretation_intent.py's module docstring).
+
+        Phase 18 - `on_progress`, if given, is called with a small
+        stage string as the request moves through it. Entirely
+        optional: every existing caller (the CLI, tests) that doesn't
+        pass it keeps working unchanged. "preparing_context" covers
+        intent classification/entity resolution/context building here
+        - all deterministic and, per this project's own measurements,
+        well under a second for almost every question, so a caller
+        polling on any reasonable interval will often never render it
+        at all (expected, not a bug). The old ask()/IndustrialQueryEngine
+        fallback path (`intent is None`) is treated as one opaque
+        "generating_ai" span rather than instrumented internally - it
+        has no exposed grounding step to report a "validating" stage
+        for, and it is the path used by the slowest real questions
+        (root_cause), so labeling its whole span "generating_ai" is
+        honest for the dominant case without touching ask()'s internals.
         """
+        if on_progress is not None:
+            on_progress("preparing_context")
+
         intent = classify_interpretation_intent(question)
 
         if intent is None:
+            if on_progress is not None:
+                on_progress("generating_ai")
+
             answer = self.ask(question)
             return AskResult(
                 answer=answer,
@@ -1842,12 +1894,12 @@ class AskEngine:
             )
 
         if intent == "FACTORY_SUMMARY":
-            return self._answer_factory_summary(question)
+            return self._answer_factory_summary(question, on_progress=on_progress)
 
         if intent == "COMPARISON":
-            return self._answer_comparison_interpretation(question)
+            return self._answer_comparison_interpretation(question, on_progress=on_progress)
 
-        return self._answer_equipment_interpretation(question, intent, context_equipment)
+        return self._answer_equipment_interpretation(question, intent, context_equipment, on_progress=on_progress)
 
     def ask(self, question: str) -> str:
         """Answer one operator question and return the final text."""
