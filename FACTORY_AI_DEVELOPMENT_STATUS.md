@@ -4925,3 +4925,135 @@ writes existed before this phase or exist after it).
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V1.1 — Cleanup & Technical Debt Resolution
+
+**Completed:** 2026-08-20
+
+First phase of a small, fixed roadmap toward a V1 production
+deployment (proposed the same day - see the review preceding this
+entry in the conversation history; not separately reproduced here).
+Deliberately cleanup-only - no engine, Ask AI, database schema, or
+production behavior was touched.
+
+### 1. Stray `factory_simulator.service` - investigated, source removed
+
+Found running live (23h uptime, ~138MB RAM) and executing
+`ai/simulator/factory_simulator.py` - a module this document's own
+earlier audits already classified as confirmed dead code, but whose
+*systemd service* had never been noticed or acted on before now.
+
+Verified before touching anything:
+- Zero Python-level importers anywhere in the live codebase (confirmed
+  by a repo-wide grep, not assumed from the earlier audit alone).
+- Writes to `database/machine_data.db` at the project ROOT - not
+  `database/simulation/machine_data.db` or `database/actual/
+  machine_data.db`, the only two paths `config/environment.py`'s
+  `ENVIRONMENTS` mapping can ever resolve to. Confirmed via direct
+  read of that mapping: the root-level path is structurally
+  unreachable by the live application no matter which environment is
+  active - this service's writes could never have leaked into real
+  behavior, past or present.
+- No `deploy/systemd/factory_simulator.service` file exists in the
+  repo - the live unit was installed directly outside git, so there
+  was nothing to remove from version control on that side.
+
+**Removed from the repository:** `ai/simulator/factory_simulator.py`
+(tracked, confirmed dead, `git rm`).
+
+**NOT removed (outside this session's capability - no sudo/TTY, see
+Known Issues):** the live systemd unit and process itself. **You need
+to run this manually:**
+```bash
+sudo systemctl stop factory_simulator.service
+sudo systemctl disable factory_simulator.service
+sudo rm /etc/systemd/system/factory_simulator.service
+sudo systemctl daemon-reload
+```
+
+**Flagged but not acted on:** the orphaned root-level
+`database/machine_data.db` (~1.5GB and growing) and `database/
+config.db` this service was writing into are now safe to delete once
+the service is stopped, but deleting a multi-GB data file wasn't
+explicitly authorized for this phase - left for a deliberate decision
+later, matching this project's established caution around database-
+file deletion. Two small untracked config files
+(`config/simulator_command.txt`, `config/simulator_config.json`) that
+existed only to feed this dead service are now fully orphaned too -
+left in place (harmless, never committed, low priority).
+
+### 2. `ai/ai_bridge.py` dead-code cluster - removed
+
+Re-verified the disposition-audit findings from earlier in this
+project against the CURRENT codebase (not assumed unchanged) via a
+repo-wide import trace: for every module in `ai/`, checked who
+imports it from `app/`, `ui/`, `engine/`, `database/`, `config/`,
+`plc/`, and `simulator/` (i.e. genuinely live code, not another dead
+module). Exactly 11 `ai/*.py` modules are live this way (`ai_provider`,
+`context_builder`, `event_engine`, `event_store`, `grounding_guard`,
+`interpretation_intent`, `interpretation_prompt_builder`,
+`prompt_builder`, `root_cause_engine`, `rule_engine`, `trend_analyzer`),
+plus `equipment_knowledge.py` (reached transitively through the live
+`event_engine.py` - confirmed explicitly kept, NOT removed).
+
+**Removed** (zero live importers, direct or transitive, confirmed
+before deletion):
+`ai/ai_bridge.py`, `ai/router.py`, `ai/query_dispatcher.py`,
+`ai/threshold_reader.py`, `ai/timeline_query.py`,
+`ai/question_understanding.py`, `ai/understanding/question_understanding.py`
+(the whole now-empty `ai/understanding/` directory went with it - it
+had no `__init__.py` and zero importers of its own),
+`ai/observation_engine.py`, `ai/database_reader.py` - the last two
+found only while tracing `ai_bridge.py`'s own imports, not part of the
+original named list but genuinely part of the same isolated cluster.
+
+**Also removed, discovered during verification, not originally
+planned:** `ai/hybrid_router.py`. Deleting `ai/router.py` broke
+`hybrid_router.py`'s own import of it (`ModuleNotFoundError` on test
+collection) - caught by running `pytest --collect-only` before the
+full suite, exactly the kind of thing that check is for. Verified
+`hybrid_router.py` itself had zero live importers (only referenced by
+its own test and a documentation comment in `ai/interpretation_intent.py`
+- confirmed that reference is prose, not a code import) before removing
+it too, rather than leaving a permanently-broken dead file behind.
+
+**Test files removed alongside** (each exclusively tested a module
+above; left in place they would either fail to collect or test nothing
+real): `tests/test_query_dispatcher.py`, `tests/test_pipeline.py`,
+`tests/test_router.py`, `tests/test_timeline_query.py`,
+`tests/test_threshold_reader.py`, `tests/test_hybrid_router.py`.
+
+**Explicitly kept, not touched:** `ai/equipment_knowledge.py` (live,
+via `event_engine.py`); every other previously-identified dead-code
+file NOT part of the ai_bridge cluster specifically (`candidate_
+selection_parser.py`, `knowledge_aware_question_parser.py`,
+`knowledge_engine.py`, `llm_question_parser.py`, `llm_route_adapter.py`,
+`llm_semantic_router.py`, `project_context.py`, `retrieval_aware_
+question_parser.py`, `semantic_router.py`, `semantic_tag_resolver.py`,
+`developer_assistant.py`, `event_timeline.py`, `ai/simulator/
+factory_simulator_backup.py` already removed earlier) - out of scope
+for this specifically-named cleanup, left for a deliberate future
+decision rather than swept up opportunistically.
+
+### Verification
+
+`python3 -c "import app.ask; import app.event_monitor; import
+app.plc_logger; import ai.event_engine; import ai.equipment_knowledge"`
+- all live entry points import cleanly after removal.
+`pytest tests/ --collect-only` - clean, zero collection errors, 1363
+tests (down from 1397+ before removal, reflecting the 6 deleted dead-
+code-only test files).
+
+### README.md
+
+Rewritten from a stale "2.0.0-alpha.1... live PLC reading, historian
+queries, LLM fallback, RAG will be added in later releases" description
+(accurate for the project's very first milestone, actively misleading
+about everything built since) to reflect the current architecture,
+major features, project structure, and how to actually run the system
+today - including a pointer to this document and `CLAUDE.md` for full
+detail rather than duplicating it.
+
+### PHASE STATUS: PASS
+
+---
