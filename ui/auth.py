@@ -63,7 +63,7 @@ def _login_form() -> None:
     immediately, so the login form is never drawn on the run that
     renders the real app.
     """
-    st.title("🏭 SmartMachineAI")
+    st.title("🏭 SmartFactoryAI")
     st.subheader("Sign in")
 
     with st.form("login_form"):

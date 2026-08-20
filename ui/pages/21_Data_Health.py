@@ -13,7 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ui import data_health_fleet_data as dhfd
 from ui import data_health_history_data as dhhd
-from ui.data_health_data import status_badge_html
+from ui import table_style as ts
+from ui.data_health_data import STATUS_TIERS, status_badge_html
 
 """
 Phase 16.4 - factory-wide Data Health overview. This is a TELEMETRY
@@ -143,7 +144,8 @@ with overview_tab:
         }
         for r in rows
     ])
-    st.dataframe(table_df, width="stretch", hide_index=True)
+    highlight_by_status = ts.make_row_highlighter("Status", STATUS_TIERS)
+    st.dataframe(table_df.style.apply(highlight_by_status, axis=1), width="stretch", hide_index=True)
     st.caption(
         "Source identifies the configured data source only and is not a live connection-health indication."
     )

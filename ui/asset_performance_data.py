@@ -16,6 +16,7 @@ from engine import performance_domain as dom
 from engine import performance_ranking as rank
 from engine.performance_targets import PERFORMANCE_DIMENSION_REGISTRY
 from ui import health_data as hd
+from ui import table_style as ts
 
 """
 Phase 14 - UI data-access layer for Asset Performance & Reliability
@@ -35,13 +36,18 @@ Priority, and Asset Performance are three separate concepts.
 
 CONFIG_DATABASE_PATH = get_config_db_path()
 
-STATE_BADGE_COLORS: dict[str, str] = {
-    "IMPROVING": "#b3ffb3",
-    "STABLE": "#d6e9ff",
-    "DEGRADING": "#ffe6a3",
-    "SIGNIFICANTLY_DEGRADING": "#ffb3b3",
-    "INSUFFICIENT_EVIDENCE": "#e6e6e6",
-    "NOT_CLASSIFIED": "#f0f0f0",
+# UI polish phase - which semantic tier (ui.table_style) each existing
+# deterministic state maps to for display. Reinforces the engine's own
+# IMPROVING/STABLE/DEGRADING/SIGNIFICANTLY_DEGRADING/
+# INSUFFICIENT_EVIDENCE/NOT_CLASSIFIED classification - introduces no
+# new state, only presentation.
+STATE_TIERS: dict[str, str] = {
+    "IMPROVING": ts.POSITIVE,
+    "STABLE": ts.STABLE,
+    "DEGRADING": ts.CAUTION,
+    "SIGNIFICANTLY_DEGRADING": ts.WARNING,
+    "INSUFFICIENT_EVIDENCE": ts.NEUTRAL,
+    "NOT_CLASSIFIED": ts.NEUTRAL,
 }
 
 STATE_LABELS: dict[str, str] = {
@@ -90,11 +96,7 @@ def effectiveness_label(result: str | None) -> str:
 
 
 def state_badge_html(state: str | None) -> str:
-    color = STATE_BADGE_COLORS.get(state, "#e6e6e6")
-    return (
-        f"<span style='background-color:{color}; color:#1a1a1a; padding:2px 10px; "
-        f"border-radius:4px; font-weight:600;'>{state_label(state)}</span>"
-    )
+    return ts.badge_html(state_label(state), STATE_TIERS.get(state))
 
 
 def _connect() -> sqlite3.Connection:

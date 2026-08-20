@@ -17,7 +17,7 @@ from ui import health_data as hd
 
 
 st.set_page_config(
-    page_title="SmartMachineAI",
+    page_title="SmartFactoryAI",
     page_icon="🏭",
     layout="wide",
 )
@@ -29,7 +29,7 @@ user = auth.require_login()
 
 
 def _overview_page() -> None:
-    st.title("🏭 SmartMachineAI")
+    st.title("🏭 SmartFactoryAI")
 
     st.markdown(
         """

@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.environment import get_config_db_path, get_machine_db_path
 from engine import data_health_engine as dhe
 from engine import data_health_targets as dht
+from ui import table_style as ts
 
 """
 Phase 16.2 - UI data-access/presentation layer for Data Health. Mirrors
@@ -33,11 +34,15 @@ and never allowed to crash the page (item P).
 CONFIG_DATABASE_PATH = get_config_db_path()
 MACHINE_DATABASE_PATH = get_machine_db_path()
 
-STATUS_BADGE_COLORS: dict[str, str] = {
-    dht.STATUS_GOOD: "#b3ffb3",
-    dht.STATUS_DEGRADED: "#ffe6a3",
-    dht.STATUS_POOR: "#ffb3b3",
-    dht.STATUS_UNAVAILABLE: "#e6e6e6",
+# UI polish phase - which semantic tier (ui.table_style) each existing
+# deterministic status maps to for display. Reinforces the engine's
+# own GOOD/DEGRADED/POOR/UNAVAILABLE classification - introduces no
+# new status, only presentation.
+STATUS_TIERS: dict[str, str] = {
+    dht.STATUS_GOOD: ts.POSITIVE,
+    dht.STATUS_DEGRADED: ts.CAUTION,
+    dht.STATUS_POOR: ts.WARNING,
+    dht.STATUS_UNAVAILABLE: ts.NEUTRAL,
 }
 
 STATUS_LABELS: dict[str, str] = {
@@ -84,11 +89,7 @@ def status_label(status: str | None) -> str:
 
 
 def status_badge_html(status: str | None) -> str:
-    color = STATUS_BADGE_COLORS.get(status, "#e6e6e6")
-    return (
-        f"<span style='background-color:{color}; color:#1a1a1a; padding:2px 10px; "
-        f"border-radius:4px; font-weight:600;'>{status_label(status)}</span>"
-    )
+    return ts.badge_html(status_label(status), STATUS_TIERS.get(status))
 
 
 def confidence_score_text(score: float | None) -> str:

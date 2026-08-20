@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ui import asset_performance_data as apd
 from ui import health_data as hd
+from ui import table_style as ts
 
 
 st.title("Asset Performance & Reliability Analytics")
@@ -68,7 +69,9 @@ with attention_tab:
                 "Maintenance Context": apd.effectiveness_label(r["maintenance_effectiveness"]) if r["maintenance_effectiveness"] else "-",
             })
         df = pd.DataFrame(table_rows)
-        st.dataframe(df, hide_index=True, width="stretch", height=420)
+        state_tiers_by_label = {apd.state_label(s): tier for s, tier in apd.STATE_TIERS.items()}
+        highlight_by_state = ts.make_row_highlighter("State", state_tiers_by_label)
+        st.dataframe(df.style.apply(highlight_by_state, axis=1), hide_index=True, width="stretch", height=420)
         st.caption(
             "Sorted by attention score (highest first), then Insufficient Evidence equipment listed separately - "
             "never interleaved as if directly comparable to a scored result."
@@ -139,7 +142,7 @@ with detail_tab:
 
     st.caption(f"{len(rows)} matching dimension(s).")
 
-    STATE_COLORS = {apd.state_label(s): f"background-color: {c}; color: #1a1a1a" for s, c in apd.STATE_BADGE_COLORS.items()}
+    state_tiers_by_label = {apd.state_label(s): tier for s, tier in apd.STATE_TIERS.items()}
     table_rows = []
     for r in rows:
         table_rows.append({
@@ -156,12 +159,8 @@ with detail_tab:
             "Last Assessed": hd.format_timestamp(r["computed_at"]),
         })
     df = pd.DataFrame(table_rows)
-
-    def _highlight(row: pd.Series) -> list[str]:
-        color = STATE_COLORS.get(row["State"], "")
-        return [color] * len(row)
-
-    st.dataframe(df.style.apply(_highlight, axis=1), hide_index=True, width="stretch", height=420)
+    highlight_by_state = ts.make_row_highlighter("State", state_tiers_by_label)
+    st.dataframe(df.style.apply(highlight_by_state, axis=1), hide_index=True, width="stretch", height=420)
 
     st.divider()
     st.markdown("**Dimension detail**")
