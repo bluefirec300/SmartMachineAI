@@ -5679,3 +5679,229 @@ or any filter/query behavior on either page.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V1.6 — Final V1 Acceptance & Go-Live Readiness
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Final review and acceptance test of the complete V1 system - no new
+features. Verify every major subsystem live where possible, fix real
+documentation staleness found along the way, and give a clear,
+honestly-scoped verdict: PASS / remaining manual checks / blocked on
+real PLC information / can wait for V2.
+
+### 1. UI pages and navigation - PASS (20/21 clean, 1 harness-only)
+
+Every page under `ui/pages/` (20) plus `ui/Home.py` loaded via
+`AppTest` with zero Python exceptions, except
+`6_Simulator_(testing_only).py`, which never reaches a stable end
+state under `AppTest` - traced to its `auto_refresh` checkbox
+defaulting to checked, driving an intentional `time.sleep(5)` +
+`st.rerun()` loop (the same live-polling pattern used elsewhere in
+this app, e.g. Live Data's `st.fragment(run_every=...)`). This is a
+testing-harness incompatibility with a by-design live-refresh page,
+not an application bug. Admin-only pages (User Management, PLC
+Connectivity, Equipment & Tag Configuration) correctly denied access
+under an unauthenticated `AppTest` session - expected behavior, not a
+failure.
+
+### 2. Simulation/Actual indication - PASS in code, action needed to go live
+
+`active_environment.txt` = `simulation`; `plc_logger.service`'s live
+log confirms "simulator driver reconnected" - consistent, no mixing.
+The Phase V1.4 sidebar badge code is correct, but **`streamlit.service`
+has been running continuously since 2026-08-21 09:16:48 - before
+today's V1.4 and V1.5 commits landed.** The live UI has not yet picked
+up the environment badge or either CSV export button. Restart required
+(see "Remaining manual checks" below); `plc_logger.service` and
+`event_monitor.service` were not touched by V1.4/V1.5 and don't need a
+restart for this work.
+
+### 3. Deterministic engines and workers - PASS
+
+All 13 systemd services active, 0 restarts on any of them:
+`plc_logger`, `event_monitor`, `streamlit`, `production_simulator`,
+and all 9 `*_worker` services. Live log activity confirmed genuinely
+healthy, not just "active": `plc_logger` logging tags every cycle,
+`event_monitor` storing new events continuously (session total
+climbing past 2,400), `historian_maintenance_worker` correctly running
+the V1.2 archive-then-delete logic with the new startup message
+format. `factory_simulator.service` (removed in V1.1) correctly shows
+not-found/dead - confirms that cleanup held.
+
+### 4. Ask AI, grounding, fallback - PASS (instant paths live-verified)
+
+Live-ran `python -m app.ask` against the running simulation data:
+"what is available to check" and "is everything ok" both returned
+correct, fully-grounded, deterministic answers citing real live
+values and the exact threshold breached for every out-of-range tag
+(e.g. "critically high at 453.77 kW (high alarm limit: 48 kW)") -
+`INSTANT_ANSWERS_SKIP_LLM` path confirmed working end-to-end. The
+LLM-grounded `root_cause` path was **not** re-triggered live this
+phase (multi-minute latency on this hardware, unchanged since its own
+dedicated verification in earlier phases, and no file under `ai/` was
+touched by V1.4 or V1.5) - covered instead by the full regression
+suite, which exercises the prompt-building/grounding-guard logic
+directly.
+
+### 5. Data Health / stale-data handling - PASS
+
+Live-verified via `AppTest`: page loads cleanly, evaluates all 34
+equipment instances, correctly worst-first sorted, "As of" timestamp
+matches wall-clock. All equipment currently reads GOOD/Fresh, which is
+the expected/correct state for a continuously-running healthy
+simulation - the staleness/frozen-candidate detection logic itself was
+already reviewed in depth in Phase V1.4 and is unchanged.
+
+### 6. Backup, archive, restore - PASS
+
+Two successful backup generations on disk (`2026-08-19` and
+`2026-08-21`, config + machine_data both `status: ok`), `backup_enabled
+= true` confirmed live in the running worker's own startup log, 32GB
+free disk (well above the 5GB minimum-reserve setting). Archive/
+retention ran again today under the current code, `months_processed:
+0` as expected (no month has crossed the 90-day cutoff yet). The
+restore procedure itself was real-tested once, live, in Phase V1.2
+(backup → verify → restore-to-temp → `quick_check` → row-count/byte
+spot-check → cleanup) - not repeated this phase, since nothing about
+the backup mechanism changed since then.
+
+### 7. Login / RBAC / lockout - PASS (with one pre-existing coverage gap noted)
+
+All 12 lockout tests pass. RBAC gating (`auth.require_role("admin")`)
+confirmed live via `AppTest`: every admin-only page correctly shows
+"You don't have permission to view this page." with no session.
+**No dedicated automated test exercises `has_role()`/`can_edit()`
+directly** - role gating is only ever exercised implicitly, through
+each admin page's own access check. Pre-existing gap, not a V1.6
+regression; noted under "Can wait for V2" below rather than fixed here
+(V1.6 is explicitly no-new-features).
+
+### 8. Event Records / Energy Dashboard CSV export - PASS
+
+All 21 Phase V1.5 tests re-run and passing. Both download buttons
+confirmed present via live `AppTest` on the current file content.
+Actual downloaded-file-opens-in-Excel verification still has not been
+done with a real browser (noted in V1.5's own report; still open).
+
+### 9. Documentation currency - two real staleness issues found and fixed
+
+- **`CLAUDE.md`**: "Confirmed dead code" / "Separate uncommitted WIP"
+  sections described the `ai/ai_bridge.py` cluster as still-present -
+  it was fully removed in Phase V1.1 (commit `15f211f`). Rewritten to
+  reflect that cleanup as done, with `app/machine_query.py` (the one
+  item from that list still genuinely unused) called out on its own.
+  "Background services (systemd)" section only listed 3 of the 13
+  services actually running, and claimed all of them were "separate
+  from anything git-tracked" - false for the 9 `*_worker` services,
+  which are tracked under `deploy/systemd/`. Rewritten with the full,
+  accurate 13-service breakdown and restart commands. Also corrected a
+  stale claim that `simulator/factory_model.py` is "untouched, unused"
+  - it's still instantiated by `plc/simulator_driver.py`, just
+  functionally inert since its tags were deleted.
+- **`README.md`**: test count ("~1360") updated to the current ~1434;
+  `production_simulator.service` was missing from the service list
+  entirely - added, with a pointer to `CLAUDE.md` for the full restart
+  commands rather than duplicating all 13.
+- `docs/NEW_FACTORY_SETUP_CHECKLIST.md` and `docs/REAL_PLC_CUTOVER_
+  PROCEDURE.md`: spot-checked, all referenced file paths and specific
+  claims (including the still-live `database/actual/` test-data
+  figures) still accurate - no changes needed.
+
+### 10. Full regression suite - PASS
+
+**1434 passed, 3 failed** - the same pre-existing, unrelated
+`test_equipment_knowledge.py` typo-correction failures carried since
+before Phase V1.1. No new failures. (A separate run during Phase V1.5
+also hit one timing-flake failure in `test_phase17_2a_context_history.py`,
+confirmed environment-timing-dependent, not code-related, and not
+reproduced in this phase's run.)
+
+### 11. Uncommitted files review
+
+`git status` is clean except the known round-2 UI feedback work,
+unchanged in scope since it was first left uncommitted:
+- Modified: `engine/savings_verification_engine.py`,
+  `ui/pages/16_Anomalies.py`, `ui/pages/17_Energy_Opportunities.py`,
+  `ui/pages/18_Savings_Verification.py`, `ui/table_style.py`
+- New: `ui/evidence_display.py`, `tests/test_ui_polish_round2.py`
+
+Reviewed this phase: all 15 of its own tests pass; `ui/table_style.py`'s
+diff is coherent (replaces a muted palette that user feedback called
+"too hard to differentiate" with the same bright palette already used
+by Event Records/Anomalies, for one consistent color language);
+`ui/evidence_display.py` is a complete, real module (not a stub) that
+replaces raw `st.json()` dumps of Evidence/Assumptions data with
+readable labeled text, exactly matching the round-2 feedback about
+"internal programmer display way with bracket." **Ready to commit as
+its own change whenever requested** - not committed here, since
+committing it wasn't part of this phase's instructions and it's
+unrelated to V1.6's own scope.
+
+### Files changed (this phase)
+
+Changed: `CLAUDE.md`, `README.md` (documentation corrections only).
+**No changes** to any deterministic engine, driver, page logic, or
+test - this was a review/verification phase by design.
+
+### FINAL V1 READINESS VERDICT
+
+**PASS - the system, as currently committed, is functionally ready
+for a real PLC cutover, pending only the manual actions and real-world
+information listed below. No genuine defect was found in any
+deterministic engine, worker, or core page this phase.**
+
+**PASS (verified this phase):**
+- All engines and workers healthy (13/13 systemd services active, 0
+  restarts, live log activity confirmed)
+- 20/21 UI pages render cleanly (1 is an AppTest-only limitation, not
+  a bug)
+- Ask AI deterministic/grounded instant-answer paths live-verified
+- Data Health staleness detection live-verified
+- Backup + archive mechanisms live-verified (restore itself
+  real-tested once in V1.2, unchanged since)
+- Login lockout (12/12 tests) and RBAC page-gating live-verified
+- CSV export (21/21 tests, both pages) re-verified
+- Full regression suite: 1434 passed, 3 pre-existing unrelated
+  failures, no new regressions
+- `CLAUDE.md`/`README.md` documentation staleness found and fixed
+
+**Remaining manual checks (for the user, not blocked on missing
+information):**
+- **Restart `streamlit.service`** - it's running pre-V1.4/V1.5 code;
+  the environment badge and both CSV export buttons aren't live yet
+- Decide what to do with the leftover test data in `database/actual/`
+  (flagged in V1.4, still present: ~10,100 historian rows + an active
+  "test opc" connection from an earlier dev session) - clear it or
+  knowingly proceed
+- A real browser click-through of both CSV downloads (only
+  `AppTest`-verified so far, never opened in an actual spreadsheet)
+- Decide when to commit the round-2 UI feedback work (item 11 above) -
+  it's ready
+
+**Blocked only by real PLC/site information** (unchanged from Phase
+V1.4 - nothing in V1.5 or V1.6 required or produced this information):
+protocol, network reachability, connection parameters, at least one
+real tag address, and which equipment to onboard first. **No claim is
+made here that real PLC hardware commissioning has been tested or
+passed** - every validation this phase and in V1.4 used either the
+local OPC UA test simulator or the Simulation environment; genuine
+plant hardware has never been connected.
+
+**Can wait for V2:**
+- Per-tab Utility Performance / Plant Comparison CSV export (V1.5
+  deliberately scoped these out)
+- PDF/report-designer reporting (explicitly deferred, CSV-only for V1)
+- Dedicated automated RBAC unit tests (currently only exercised
+  implicitly via page-level access checks)
+- Moving `plc_logger.service`/`event_monitor.service`/
+  `streamlit.service`/`production_simulator.service` unit files into
+  `deploy/systemd/` alongside the 9 worker services, for consistency
+- Further LLM root-cause grounding-fidelity work (documented, accepted,
+  hardware-dependent limitation - revisit on better hardware)
+
+### PHASE STATUS: PASS
+
+---

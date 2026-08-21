@@ -65,8 +65,12 @@ development. Only some of it is actually wired together:
   additive/idempotent. Both P01 and P02 are now fully enabled (625/625
   tags, 76 equipment instances).
 - `simulator/tag_dataset_model.py` - generic value generator for the
-  imported dataset (kept separate from the untouched, unused legacy
-  `simulator/factory_model.py`). Each equipment instance has its own
+  imported dataset. `plc/simulator_driver.py` still instantiates the
+  legacy `simulator/factory_model.py` (`FactorySimulator`) alongside
+  it, but that class produces no live output - the ~20-tag hand-scripted
+  demo it drives was fully retired (deleted from `tags`/`equipment`,
+  see "Current data model" below), so it's structurally still wired in
+  but functionally inert. Each equipment instance has its own
   dormant->developing->faulted->recovering fault cycle so faults read as
   one correlated event. Start-count tags increment only on a genuine
   0->1 transition of their paired running-status tag.
@@ -88,19 +92,16 @@ development. Only some of it is actually wired together:
   pre-computed verdict the LLM may only restate, never recompute.
 - `ai/ai_provider.py` + `ai/providers/*` - the Qwen/GPT switch layer.
 
-**Confirmed dead code (not imported anywhere, safe to ignore/delete
-later, not yet cleaned up):** `ai/ai_bridge.py` (+ its `.backup*`
-files), `ai/simulator/factory_simulator.py` (+ backup - the *live*
-simulator is `simulator/factory_model.py` via `plc/simulator_driver.py`),
-`app/machine_query.py`, `ai/understanding/question_understanding.py`.
-
-**Separate uncommitted WIP - deliberately NOT touched/merged:**
-`ai/ai_bridge.py` has uncommitted edits wiring in `RootCauseEngine`
-despite being dead/unimported code, plus related untracked leftovers
-(`engine/industrial_query_engine_before_driver_selection.py`,
-`config/system.json`, `config/simulator_config.json`,
-`config/simulator_command.txt`). When picking this back up: decide
-deliberately whether to finish or discard it.
+**Dead code cleanup - done (Phase V1.1, commit `15f211f`).** The
+former `ai/ai_bridge.py` cluster (+ its `.backup*` files),
+`ai/simulator/factory_simulator.py` (+ backup),
+`ai/understanding/question_understanding.py`,
+`engine/industrial_query_engine_before_driver_selection.py`, and the
+stray `config/simulator_config.json`/`config/simulator_command.txt`
+leftovers were all removed. `config/system.json` was kept and is now
+a normal tracked file (not uncommitted WIP). `app/machine_query.py`
+is the one item from that original list still present and still
+unimported - safe to ignore/delete whenever it's next touched.
 
 ## Current data model
 
@@ -313,10 +314,15 @@ Key design choices to preserve:
 
 ## Background services (systemd)
 
-Three **system** services under `/etc/systemd/system/`, separate from
-anything git-tracked - all `Restart=always`, all need a manual restart
-to pick up any code change (each imports its Python modules once at
-process start):
+13 services under `/etc/systemd/system/` as of Phase V1.6, all
+`Restart=always`, all need a manual restart to pick up any code change
+(each imports its Python modules once at process start). Verify the
+live count/health with `systemctl list-units --all | grep -iE
+"worker|plc_logger|event_monitor|streamlit"` rather than trusting this
+list's count to stay current.
+
+**Three core services, not git-tracked** (unit files live only in
+`/etc/systemd/system/`, not under `deploy/`):
 ```bash
 sudo systemctl restart plc_logger.service event_monitor.service streamlit.service
 ```
@@ -327,6 +333,23 @@ sudo systemctl restart plc_logger.service event_monitor.service streamlit.servic
   `WorkingDirectory=/home/test/SmartMachineAI`.
 - `streamlit.service` - `streamlit run ui/Home.py --server.headless true
   --server.port 8501`, same `WorkingDirectory`.
+
+**Nine `*_worker.service` background engines, git-tracked**
+(`deploy/systemd/*.service`, one per deterministic engine - anomaly,
+asset_performance, baseline, data_health_history, energy_kpi,
+equipment_health, historian_maintenance, opportunity,
+savings_verification):
+```bash
+sudo systemctl restart anomaly_worker.service asset_performance_worker.service \
+  baseline_worker.service data_health_history_worker.service energy_kpi_worker.service \
+  equipment_health_worker.service historian_maintenance_worker.service \
+  opportunity_worker.service savings_verification_worker.service
+```
+
+**One more, not git-tracked, not yet moved under `deploy/`:**
+`production_simulator.service` (`app/production_simulator.py`) -
+generates simulated production batches for the production-normalized
+energy metrics.
 
 No `sudo`/TTY access from this session - ask the user to run restart
 commands themselves (suggest the `! <command>` prefix).
@@ -391,6 +414,8 @@ commands themselves (suggest the `! <command>` prefix).
   evidence it was given - don't just check that the right context made
   it into the prompt.
 - Commit only when explicitly asked, and stage specific files rather
-  than `git add -A`/`.` - this repo has genuine unrelated pre-existing
-  uncommitted WIP (see "Separate uncommitted WIP" above) that must
-  never get swept into an unrelated commit by accident.
+  than `git add -A`/`.` - this repo periodically carries genuine
+  unrelated uncommitted WIP (check `git status` fresh each time rather
+  than trusting this doc's memory of what's currently uncommitted -
+  see the note above about trusting the codebase over this doc) that
+  must never get swept into an unrelated commit by accident.

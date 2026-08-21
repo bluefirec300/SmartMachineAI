@@ -86,7 +86,7 @@ SmartMachineAI/
 ├── simulator/   The live simulator (tag_dataset_model.py, via
 │                plc/simulator_driver.py) - generates realistic fault-
 │                correlated sensor data for development/testing
-├── tests/       ~1360 automated tests
+├── tests/       ~1430 automated tests
 └── ui/          The Streamlit application (Home.py + pages/)
 ```
 
@@ -103,16 +103,14 @@ pip install -r requirements.txt
 streamlit run ui/Home.py --server.headless true --server.port 8501
 ```
 
-In a real deployment, `plc_logger`, `event_monitor`, `streamlit`, and
-the background `*_worker` services all run continuously under systemd
-(`deploy/systemd/*.service`, plus `plc_logger.service`,
-`event_monitor.service`, and `streamlit.service` - not yet moved into
-`deploy/`). All are `Restart=always` and need a manual restart after
-any code change:
-
-```bash
-sudo systemctl restart plc_logger.service event_monitor.service streamlit.service
-```
+In a real deployment, `plc_logger`, `event_monitor`, `streamlit`, the
+9 background `*_worker` services, and `production_simulator` all run
+continuously under systemd (`deploy/systemd/*.service` for the 9
+workers, plus `plc_logger.service`, `event_monitor.service`,
+`streamlit.service`, and `production_simulator.service` - not yet
+moved into `deploy/`). All are `Restart=always` and need a manual
+restart after any code change - see `CLAUDE.md`'s "Background services
+(systemd)" section for the full restart commands covering all 13.
 
 Ask AI can also be run standalone from the CLI: `python -m app.ask`.
 
