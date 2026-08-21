@@ -15,12 +15,19 @@ the project's actual settings.ini and against a missing-key fallback.
 
 class TestHistorianBackupConfigDefaultsAgainstRealSettings(unittest.TestCase):
     """Integration check against the actual shipped config/settings.ini
-    - not a fixture - proving backup is genuinely disabled in this
-    project's real, current configuration, not merely in an isolated test."""
+    - not a fixture - proving the real, current configuration reads back
+    correctly, not merely in an isolated test."""
 
-    def test_backup_is_disabled_in_the_real_project_settings_ini(self):
+    def test_backup_is_enabled_in_the_real_project_settings_ini(self):
+        # Phase V1.2 - re-confirmed real disk headroom on this VM and
+        # deliberately enabled backup for real (was disabled since the
+        # original backup-readiness follow-up). This assertion tracks
+        # that intentional, current state - not a regression guard for
+        # the OLD disabled default (see TestHistorianBackupConfigFallbacks
+        # below for the fallback-when-unconfigured behavior, which is
+        # still correctly False/disabled-by-default).
         config = ConfigManager()
-        self.assertFalse(config.historian_backup_enabled)
+        self.assertTrue(config.historian_backup_enabled)
 
     def test_retention_remains_configured_and_unaffected(self):
         # Disabling backup must not disable retention - they are

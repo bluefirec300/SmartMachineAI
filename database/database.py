@@ -6,6 +6,7 @@ from typing import Any
 
 from config.environment import get_machine_db_path
 from database.backup import backup_sqlite_database
+from database.historian_archive import archive_dir_for, query_archived_history
 
 
 DB_PATH = get_machine_db_path()
@@ -15,6 +16,7 @@ class DatabaseManager:
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = Path(db_path).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.archive_dir = archive_dir_for(self.db_path)
         self.initialize()
 
     def get_connection(self) -> sqlite3.Connection:
@@ -209,24 +211,12 @@ class DatabaseManager:
 
         start_time = datetime.now() - timedelta(hours=hours)
 
-        with self.get_connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT time, tag, address, value
-                FROM plc_data
-                WHERE tag = ?
-                  AND time >= ?
-                ORDER BY time ASC, id ASC
-                LIMIT ?
-                """,
-                (
-                    tag,
-                    start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    limit,
-                ),
-            ).fetchall()
-
-        return [dict(row) for row in rows]
+        return self.get_history_range(
+            tag,
+            start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            limit=limit,
+        )
 
     def get_history_range(
         self,
@@ -241,6 +231,16 @@ class DatabaseManager:
         from now" lookback - needed to pull a specific past calendar
         day (e.g. "yesterday", or an arbitrary named date) rather than
         only ever a window ending at the current moment.
+
+        Phase V1.2 - transparently merges in archived (Historian
+        Archive) rows when the requested range reaches further back
+        than what's still in the live table, so every existing caller
+        (deterministic engines, Ask AI, UI pages) keeps working exactly
+        as before with no code change of their own and no need to know
+        whether a given row came from the live table or an archive
+        file. A no-op (one cheap directory-existence check) for the
+        overwhelming majority of queries, which never reach archived
+        data at all - see database.historian_archive's module docstring.
         """
         if limit <= 0:
             raise ValueError("Limit must be greater than zero.")
@@ -264,7 +264,22 @@ class DatabaseManager:
                 ),
             ).fetchall()
 
-        return [dict(row) for row in rows]
+        live_rows = [dict(row) for row in rows]
+
+        if len(live_rows) < limit and self.archive_dir.exists():
+            archived_rows = query_archived_history(self.archive_dir, tag, start, end, limit)
+
+            if archived_rows:
+                # Archived months are always strictly older than whatever
+                # remains in the live table (archive_and_purge_eligible_
+                # months() only ever archives a FULLY elapsed month, and
+                # the live table only ever holds the retention window) -
+                # both lists are already individually time-ordered, so a
+                # plain concatenation is already fully time-ordered too;
+                # no re-sort needed.
+                live_rows = (archived_rows + live_rows)[:limit]
+
+        return live_rows
 
     def cleanup(self, days: int = 30) -> int:
         if days <= 0:

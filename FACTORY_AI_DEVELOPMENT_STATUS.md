@@ -5057,3 +5057,220 @@ detail rather than duplicating it.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V1.2 — Backup, Restore & Historian Retention
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Make database storage safe for long-term factory use without letting
+the active historian grow forever - keep recent raw data live, archive
+older raw data automatically (verified before deletion), keep archived
+data transparently queryable, enable and prove real backup/restore,
+and add disk-space protection. Reused the existing backup/preflight/
+retention infrastructure throughout rather than building a second
+mechanism - no new database platform, per explicit direction.
+
+### Storage/retention design
+
+**New module: `database/historian_archive.py`.** One plain SQLite file
+per fully-elapsed calendar month (`database/<env>/archive/plc_data_
+YYYY-MM.db`, same `plc_data` schema as the live table), not one ever-
+growing archive file and not a new database platform. A month is
+"eligible" only once its own LAST day is older than the configured
+retention cutoff (`now - retention_days`, default 90, unchanged
+`config/settings.ini` key) - a month straddling the cutoff is left
+alone until it's genuinely fully elapsed. A calendar month with zero
+rows (e.g. a real logging gap) is silently skipped, never given a
+wasted empty archive file.
+
+**Safety invariant - archive, verify, THEN delete, never any other
+order:** `archive_and_purge_eligible_months()` creates the month's
+archive file, `verify_month_archive()` independently re-derives row
+COUNT and MIN/MAX(time) from the LIVE table and compares them exactly
+against the same query against the archive file, and `delete_month_
+from_live()` - the only function in the module that deletes anything -
+is only ever called after that verification passes. A failed or
+skipped verification leaves the live month completely untouched and
+retries next cycle; the orchestrator stops at the first failure/skip
+rather than continuing to later months, favoring "retry safely later"
+over "push forward into an unclear state."
+
+**Disk-space protection (requirement 6):** archive creation reuses
+`database.backup.check_backup_preflight()` unchanged (schema-agnostic;
+originally built for the backup-readiness follow-up) - insufficient
+free space skips the archive attempt entirely (no partial file, no
+deletion) rather than risking filling the disk.
+
+**Worker wiring:** `app/historian_maintenance_worker.py` gained
+`run_historian_archive_if_due()`, called from `run_forever()` in place
+of the old `run_retention_if_due()` (blind `DELETE ... WHERE time <
+cutoff`, no archive). Both old function and `DatabaseManager.cleanup()`
+are left completely unchanged and still individually tested - simply
+no longer called in production, since running both together would
+actively conflict (a blind delete could remove data the archive step
+hadn't verified yet). New marker file `logs/historian_archive_last_
+run.txt`, same restart-safe due-interval pattern as retention/backup
+already used.
+
+### How archived data remains queryable
+
+`DatabaseManager.get_history()` and `get_history_range()` - the exact
+two methods every existing caller already uses (`app/ask.py`,
+`engine/baseline_engine.py`, `engine/energy_kpi_engine.py` in six
+places, `ui/energy_dashboard_data.py`) - now transparently merge in
+archived rows when the live table alone doesn't satisfy the requested
+range and limit. Zero signature changes, zero caller-side changes -
+every deterministic engine, Ask AI, and UI page that already called
+these methods gained archive access automatically. Archived months are
+always strictly older than whatever remains live (by construction), so
+merging is a simple, cheap concatenation - no re-sort needed. The
+common case (a query the live table alone can already satisfy) never
+even checks whether an archive directory exists - confirmed by a
+dedicated test (`test_query_within_retention_window_never_touches_
+archive_dir`).
+
+Requirement 4 ("long-range queries should use existing summaries where
+practical") was already true before this phase and untouched by it -
+the Energy Dashboard's own long-range chart already reads `energy_kpi_
+daily_summary` (a pre-aggregated table), never raw `plc_data`, and
+Equipment/Data Health history pages already read their own persisted
+snapshot tables. This phase's archive-awareness exists for the raw-
+sample callers (engines computing real deltas/accumulations, Ask AI
+historical/comparison questions) that genuinely need actual readings,
+not chart aggregates.
+
+### Backup enabled and verified for real
+
+Re-confirmed real headroom on this VM before flipping the flag: 32-35GB
+free vs. ~11.5GB required for one full backup cycle at current database
+sizes (config.db ~22MB, machine_data.db ~3GB). `config/settings.ini`'s
+`backup_enabled` is now `true` (was `false` since the original backup-
+readiness follow-up). Also structurally true now, not just today: this
+phase's archiving keeps the live historian bounded to the retention
+window going forward, rather than growing forever between backups -
+the original reason backup was disabled.
+
+**Ran a real backup cycle** (`run_backup_if_due()`, unmodified, against
+the actual `database/simulation/{config,machine_data}.db`) - completed
+in 17.1s, both databases `status: ok`:
+```
+config_backup_20260821_093713.db      (21.8 MB)
+machine_data_backup_20260821_093713.db (3.08 GB)
+```
+
+### Real restore test (safe temporary location, never touched the live database)
+
+1. Copied both fresh backup files to a temp scratch directory (outside
+   the repo, outside `database/`).
+2. `PRAGMA quick_check` on both restored files: `ok` (full page-by-page
+   `integrity_check` on the 3GB file was tried first and takes several
+   minutes - `quick_check` is the right-sized structural check for a
+   file this size and is what's documented as the routine check below).
+3. Row counts, restored vs. the live source: `equipment` 83=83, `tags`
+   625=625, `users` 6=6, `thresholds` 374=374 (config.db - exact match).
+   `plc_data`: restored 16,628,841 vs. live 16,633,784 at verification
+   time - the ~5,000-row gap is the live system's own writes continuing
+   in the minute between the backup and the check, not a data problem;
+   an honest, expected gap for a point-in-time snapshot.
+4. Spot-checked the restored file's first row byte-for-byte against the
+   same row in the live source (exact match on time/tag/address/value).
+5. Deleted the temp restore copies once verification passed - the real
+   backup files themselves remain in `backups/simulation/`.
+
+**Documented restore procedure** (for a genuine future restore, not
+performed here beyond the safe verification above):
+```bash
+# 1. Stop the services that write to the database
+sudo systemctl stop plc_logger.service event_monitor.service streamlit.service
+
+# 2. Move the current (possibly damaged) database aside - never delete
+#    it outright until the restored copy is confirmed working
+mv database/simulation/machine_data.db database/simulation/machine_data.db.pre-restore
+mv database/simulation/config.db database/simulation/config.db.pre-restore
+
+# 3. Copy the desired backup into place
+cp backups/simulation/machine_data_backup_<TIMESTAMP>.db database/simulation/machine_data.db
+cp backups/simulation/config_backup_<TIMESTAMP>.db database/simulation/config.db
+
+# 4. Sanity-check before trusting it
+sqlite3 database/simulation/machine_data.db "PRAGMA quick_check;"
+sqlite3 database/simulation/config.db "PRAGMA quick_check;"
+
+# 5. Restart services
+sudo systemctl start plc_logger.service event_monitor.service streamlit.service
+
+# 6. Once confirmed healthy, remove the .pre-restore files
+```
+A restored database will be missing any writes that happened after
+that backup's timestamp - expected for any point-in-time backup, not a
+defect. Archived months (in `database/simulation/archive/`) are
+separate files, untouched by a `machine_data.db` restore - back them up
+independently if the archive directory itself is ever at risk.
+
+### Review of the orphaned `database/machine_data.db` from Phase V1.1
+
+Confirmed still exactly what Phase V1.1 found: **safe to remove, not
+removed automatically here either, per instruction.** The stray
+`factory_simulator.service` and its systemd unit are now fully gone
+(you already ran the V1.1 cleanup commands) - the file is static (no
+longer growing), still structurally unreachable by the live application
+(`config/environment.py`'s `ENVIRONMENTS` mapping only ever resolves to
+`database/simulation/` or `database/actual/`, never the bare root
+path), and nothing reads or writes it. ~1.5GB (`database/machine_data.db`
++ `-wal`/`-shm`) plus the small stale `database/config.db` (~7.5MB) can
+be reclaimed whenever you're ready:
+```bash
+rm database/machine_data.db database/machine_data.db-wal database/machine_data.db-shm database/config.db
+```
+
+### Tests
+
+47 new/changed tests, all passing:
+- `tests/test_historian_archive.py` (24 new) - month-boundary math,
+  eligibility (including the legacy ISO-'T'-separator timestamp quirk,
+  and a genuinely empty intermediate month), create/verify/delete in
+  isolation, the full orchestration (never-deletes-before-verified,
+  disk-space skip leaves data untouched, idempotent re-run, multiple
+  months oldest-first), archived-history querying, and - the key proof
+  - `DatabaseManager.get_history()`/`get_history_range()` transparently
+  spanning archived and live data with no caller-side change.
+- `tests/test_historian_maintenance_worker.py` (+5) - `run_historian_
+  archive_if_due()`'s due-interval/marker behavior, disk-space safety,
+  and that it genuinely archives-and-purges a real fully-elapsed month.
+- All against small, isolated temporary databases with synthetic old
+  data - the real live database has no month old enough to be eligible
+  yet (data only goes back ~4 weeks; default retention is 90 days), so
+  synthetic old data was the only way to safely exercise the full
+  pipeline (matching this project's established no-destructive-testing-
+  against-the-real-historian convention).
+
+Full regression after these changes: see closeout report for the exact
+current numbers.
+
+### Files/schema changed
+
+New: `database/historian_archive.py`, `tests/test_historian_archive.py`.
+Changed: `database/database.py` (`get_history`/`get_history_range` -
+archive-aware; `cleanup()`/`backup()` untouched), `app/historian_
+maintenance_worker.py` (new `run_historian_archive_if_due()`; old
+`run_retention_if_due()` kept, no longer called), `tests/test_
+historian_maintenance_worker.py` (+5 tests), `config/settings.ini`
+(`backup_enabled = true`). **No SQL schema change** - archive files
+reuse the exact same `plc_data` table definition as the live database;
+no new table was added to `config.db` or `machine_data.db` itself.
+
+### Preserved, not touched
+
+Deterministic engineering calculations, Ask AI's interpretation/
+grounding pipeline, `machine_events`/anomalies/baseline/energy-KPI/
+opportunity/savings-verification/health/performance/data-health tables
+and their own persistence - none of this phase's changes reach any of
+them. `plc_text_data` (STRING-tag current-value table) is unaffected -
+it was never part of the growth problem this phase addresses (one row
+per tag, overwritten each cycle, not a time series).
+
+### PHASE STATUS: PASS
+
+---

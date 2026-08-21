@@ -12,10 +12,12 @@ from app.historian_maintenance_worker import (
     _write_last_run,
     read_last_backup_summary,
     run_backup_if_due,
+    run_historian_archive_if_due,
     run_retention_if_due,
 )
 from database.backup import BACKUP_SKIPPED_INSUFFICIENT_DISK_SPACE, backup_sqlite_database, check_backup_preflight
 from database.database import DatabaseManager
+from database.historian_archive import archive_dir_for, archive_path_for_month
 
 """
 Phase 18.1a - historian retention + backup worker tests. Covers the
@@ -114,6 +116,77 @@ class TestRunRetentionIfDue(unittest.TestCase):
     def test_marker_updated_after_run(self):
         run_retention_if_due(self.historian, retention_days=90, interval_hours=24, marker_path=self.marker, now=self.now)
         self.assertEqual(_read_last_run(self.marker), self.now)
+
+
+class TestRunHistorianArchiveIfDue(unittest.TestCase):
+    """Phase V1.2 - the archive-then-delete function run_forever()
+    actually calls now (see the module's own docstring for why
+    TestRunRetentionIfDue's subject above is kept but no longer used
+    in production)."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+        self.historian = DatabaseManager(db_path=self.tmpdir / "machine.db")
+        self.archive_dir = archive_dir_for(self.historian.db_path)
+        self.marker = self.tmpdir / "archive_marker.txt"
+        self.now = datetime(2026, 8, 21, 12, 0, 0)
+
+    def test_archives_and_removes_a_fully_elapsed_month_from_live(self):
+        self.historian.save_tag("T1", "addr", 1.0, timestamp=datetime(2026, 3, 10))
+        self.historian.save_tag("T1", "addr", 2.0, timestamp=datetime(2026, 8, 15))  # recent, stays live
+
+        summary = run_historian_archive_if_due(
+            self.historian, retention_days=90, interval_hours=24, minimum_free_reserve_bytes=1024,
+            marker_path=self.marker, now=self.now,
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["months_processed"], 1)
+        self.assertTrue(summary["months"][0]["verified"])
+        self.assertTrue(archive_path_for_month(self.archive_dir, 2026, 3).exists())
+
+        with self.historian.get_connection() as connection:
+            remaining = connection.execute("SELECT COUNT(*) AS c FROM plc_data").fetchone()["c"]
+        self.assertEqual(remaining, 1)  # only the recent row survives in the live table
+
+    def test_reported_as_ran_even_when_nothing_is_eligible_yet(self):
+        self.historian.save_tag("T1", "addr", 1.0, timestamp=self.now)  # entirely recent
+        summary = run_historian_archive_if_due(
+            self.historian, retention_days=90, interval_hours=24, minimum_free_reserve_bytes=1024,
+            marker_path=self.marker, now=self.now,
+        )
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["months_processed"], 0)
+
+    def test_not_due_yet_returns_none_and_touches_nothing(self):
+        self.historian.save_tag("T1", "addr", 1.0, timestamp=datetime(2026, 3, 10))
+        _write_last_run(self.marker, self.now - timedelta(hours=1))
+
+        summary = run_historian_archive_if_due(
+            self.historian, retention_days=90, interval_hours=24, minimum_free_reserve_bytes=1024,
+            marker_path=self.marker, now=self.now,
+        )
+        self.assertIsNone(summary)
+        self.assertFalse(archive_path_for_month(self.archive_dir, 2026, 3).exists())
+
+    def test_marker_updated_after_run(self):
+        run_historian_archive_if_due(
+            self.historian, retention_days=90, interval_hours=24, minimum_free_reserve_bytes=1024,
+            marker_path=self.marker, now=self.now,
+        )
+        self.assertEqual(_read_last_run(self.marker), self.now)
+
+    def test_insufficient_disk_space_never_deletes_anything(self):
+        self.historian.save_tag("T1", "addr", 1.0, timestamp=datetime(2026, 3, 10))
+        run_historian_archive_if_due(
+            self.historian, retention_days=90, interval_hours=24, minimum_free_reserve_bytes=10**18,
+            marker_path=self.marker, now=self.now,
+        )
+        with self.historian.get_connection() as connection:
+            remaining = connection.execute("SELECT COUNT(*) AS c FROM plc_data").fetchone()["c"]
+        self.assertEqual(remaining, 1)  # nothing deleted - disk-space skip
+        self.assertFalse(archive_path_for_month(self.archive_dir, 2026, 3).exists())
 
 
 class TestBackupSqliteDatabase(unittest.TestCase):

@@ -16,6 +16,7 @@ from config.config_manager import ConfigManager
 from config.environment import get_config_db_path, get_machine_db_path, get_active_environment
 from database.backup import backup_sqlite_database, check_backup_preflight
 from database.database import DatabaseManager
+from database.historian_archive import archive_and_purge_eligible_months, archive_dir_for
 
 """
 Phase 18.1a - historian retention + database backup, in one worker.
@@ -26,16 +27,19 @@ low-risk maintenance operations against the same two database files,
 and combining them avoids growing the systemd service count further
 for what is operationally one job ("keep the databases healthy").
 
-Retention: reuses DatabaseManager.cleanup() UNCHANGED - that method
-already, correctly, only ever touches plc_data (raw historian
-time-series rows). It has never deleted machine_events, anomalies,
-baseline results, energy KPI summaries, energy opportunities,
-maintenance records, audit records, or any configuration table, and
-this worker does not change that scope in any way - it only finally
-calls the method with a real, configurable retention_days value
-instead of leaving it uncalled (see config/settings.ini's
-[DATABASE] retention_days, now actually read via
-config.config_manager.ConfigManager.historian_retention_days).
+Retention (Phase V1.2 - superseded from a blind delete to archive-then-
+delete): run_forever() now calls run_historian_archive_if_due(), which
+delegates to database.historian_archive.archive_and_purge_eligible_months()
+- every fully-elapsed calendar month is copied to its own verified
+archive file BEFORE being removed from the live plc_data table, never
+a bare DELETE. The original run_retention_if_due()/DatabaseManager.
+cleanup() (blind delete, no archive) are left completely UNCHANGED and
+still fully tested below - they are simply no longer called from
+run_forever(), since running both would actively conflict (whichever
+ran first on a given cycle would remove data the other was still
+relying on being present). Kept, not deleted, in case a future
+decision prefers a hard-delete-only mode again; still correct code,
+still exercised by its own existing tests.
 
 Backup: reuses database.backup.backup_sqlite_database() - the same
 SQLite Online Backup API DatabaseManager.backup() already used, now
@@ -66,6 +70,7 @@ event_monitor, streamlit, or any analytics worker.
 TICK_INTERVAL_SECONDS = 300.0  # 5 min - cheap "is it time yet?" check; actual work only runs on its own configured interval
 LOCK_FILE_PATH = PROJECT_ROOT / "logs" / "historian_maintenance_worker.lock"
 RETENTION_MARKER_PATH = PROJECT_ROOT / "logs" / "historian_retention_last_run.txt"
+ARCHIVE_MARKER_PATH = PROJECT_ROOT / "logs" / "historian_archive_last_run.txt"
 BACKUP_MARKER_PATH = PROJECT_ROOT / "logs" / "historian_backup_last_run.txt"
 # Backup readiness follow-up - a small, structured (JSON, not plain
 # text) record of the LAST backup attempt's per-database outcome,
@@ -143,6 +148,41 @@ def run_retention_if_due(
     _write_last_run(marker_path, now)
 
     return {"retention_days": retention_days, "deleted_rows": deleted_rows, "ran_at": now.strftime(MARKER_TIME_FORMAT)}
+
+
+def run_historian_archive_if_due(
+    historian: DatabaseManager, retention_days: int, interval_hours: float, minimum_free_reserve_bytes: int,
+    marker_path: Path = ARCHIVE_MARKER_PATH, now: datetime | None = None,
+) -> dict | None:
+    """
+    Phase V1.2 - the function run_forever() actually calls for
+    retention now (see this module's docstring for why the older
+    run_retention_if_due() above is kept but no longer used). Archives
+    every fully-elapsed calendar month (verified before any deletion -
+    see database.historian_archive.archive_and_purge_eligible_months())
+    if the configured interval has elapsed since the last recorded run.
+    Returns a summary dict when it actually ran (even if there was
+    nothing eligible yet - that's still a genuine, loggable outcome,
+    distinct from "not due yet"), else None.
+    """
+    now = now or datetime.now()
+    last_run = _read_last_run(marker_path)
+
+    if not _is_due(last_run, interval_hours, now):
+        return None
+
+    archive_dir = archive_dir_for(historian.db_path)
+    month_results = archive_and_purge_eligible_months(
+        historian, archive_dir, retention_days, minimum_free_reserve_bytes, now=now,
+    )
+    _write_last_run(marker_path, now)
+
+    return {
+        "retention_days": retention_days,
+        "months_processed": len(month_results),
+        "months": month_results,
+        "ran_at": now.strftime(MARKER_TIME_FORMAT),
+    }
 
 
 def _prune_old_backups(directory: Path, prefix: str, keep_count: int) -> list[Path]:
@@ -249,11 +289,13 @@ def run_forever(
     historian = DatabaseManager(db_path=machine_database_path)
     backup_destination = config.historian_backup_destination_dir / get_active_environment()
 
+    archive_dir = archive_dir_for(machine_database_path)
+
     print(
         f"Historian maintenance worker started. Config DB: {config_database_path}. "
-        f"Machine DB: {machine_database_path}. Tick interval: {tick_interval:g}s. "
-        f"Retention: {config.historian_retention_days} day(s), checked every "
-        f"{config.historian_retention_check_interval_hours:g}h. "
+        f"Machine DB: {machine_database_path}. Archive dir: {archive_dir}. Tick interval: {tick_interval:g}s. "
+        f"Retention: {config.historian_retention_days} day(s) (archive-then-delete, by calendar month), "
+        f"checked every {config.historian_retention_check_interval_hours:g}h. "
         f"Backup: {'enabled' if config.historian_backup_enabled else 'disabled'}, "
         f"every {config.historian_backup_interval_hours:g}h, "
         f"destination {backup_destination}, keep {config.historian_backup_retention_count}, "
@@ -262,14 +304,15 @@ def run_forever(
 
     while True:
         try:
-            summary = run_retention_if_due(
+            summary = run_historian_archive_if_due(
                 historian, config.historian_retention_days,
                 config.historian_retention_check_interval_hours,
+                config.historian_backup_minimum_free_reserve_bytes,
             )
             if summary is not None:
-                print(f"retention: {summary}")
+                print(f"archive/retention: {summary}")
         except Exception as error:
-            print(f"historian_maintenance_worker retention cycle failed: {error}")
+            print(f"historian_maintenance_worker archive/retention cycle failed: {error}")
 
         if config.historian_backup_enabled:
             try:
