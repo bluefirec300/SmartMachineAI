@@ -153,6 +153,59 @@ class EnergyDashboardPageDownloadButtonTests(unittest.TestCase):
         labels = [b.label for b in at.download_button]
         self.assertIn("⬇️ Download Main Energy CSV", labels)
 
+    def test_page_also_renders_main_energy_and_breakdown_pdf_buttons(self):
+        at = AppTest.from_file(ENERGY_DASHBOARD_PAGE, default_timeout=60)
+        at.run()
+        self.assertFalse(bool(at.exception))
+        labels = [b.label for b in at.download_button]
+        self.assertIn("⬇️ Download Main Energy PDF", labels)
+        self.assertIn("⬇️ Download Equipment Power Breakdown PDF", labels)
+
+
+class MainEnergyPdfTableShapeTests(unittest.TestCase):
+    """
+    Phase V2.6 - the Main Energy PDF pulls Plant/Period Start/Period
+    End/Generated At out of main_energy_df into the report's header
+    parameters (shown once) rather than repeating them on every printed
+    row, unlike the CSV export's flat shape. Same underlying values,
+    just restructured for a readable printed table - verified here by
+    reproducing the page's own drop-columns logic against a real
+    build_main_energy_dataframe() result.
+    """
+
+    def setUp(self):
+        self.build_main_energy_dataframe, _ = _load_export_functions()
+        self.period_kpis = {
+            "energy": _available(123.456, "kWh"),
+            "cost": _available(45.6, "MYR"),
+            "estimated_demand_charge": _available(10.0, "MYR"),
+            "estimated_maximum_demand": _available(50.0, "kW"),
+            "production_energy_kwh": _available(80.0, "kWh"),
+            "non_production_energy_kwh": _available(43.456, "kWh"),
+            "average_production_period_demand_kw": _available(20.0, "kW"),
+            "estimated_base_load": _available(5.0, "kW"),
+            "after_hours": _unavailable(),
+        }
+        self.month_kpis = {
+            "energy_month": _available(1000.0, "kWh"),
+            "cost_month": _available(400.0, "MYR"),
+            "projected_month_cost": _available(1200.0, "MYR"),
+        }
+
+    def test_header_metadata_columns_are_droppable_leaving_only_metric_columns(self):
+        df = self.build_main_energy_dataframe(
+            "p01", datetime(2026, 8, 20), datetime(2026, 8, 21), self.period_kpis, self.month_kpis, None, []
+        )
+        table_df = df.drop(columns=["Plant", "Period Start", "Period End", "Generated At"])
+        self.assertEqual(set(table_df.columns), {"Metric", "Value", "Unit", "Classification", "Notes"})
+
+    def test_dropping_header_columns_does_not_lose_any_rows(self):
+        df = self.build_main_energy_dataframe(
+            "p01", datetime(2026, 8, 20), datetime(2026, 8, 21), self.period_kpis, self.month_kpis, None, []
+        )
+        table_df = df.drop(columns=["Plant", "Period Start", "Period End", "Generated At"])
+        self.assertEqual(len(table_df), len(df))
+
 
 if __name__ == "__main__":
     unittest.main()

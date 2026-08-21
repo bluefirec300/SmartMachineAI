@@ -1,6 +1,10 @@
 requests>=2.31,<3
 openai>=1.0
 pypdf>=4.0
+# PDF *generation* (Phase V2.6 reporting) - distinct from pypdf above,
+# which only reads/extracts existing manufacturer-manual PDFs. Pure
+# Python, no system binary dependency (unlike e.g. weasyprint/wkhtmltopdf).
+reportlab>=4.0,<5
 # Pinned (not >=): ui/pages/12_SCADA_Floor_Plan.py uses the deprecated
 # st.components.v1.html() API, scheduled for removal in a future
 # Streamlit release. Upgrading past this pin requires migrating that

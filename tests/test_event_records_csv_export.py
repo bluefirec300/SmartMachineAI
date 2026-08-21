@@ -114,6 +114,60 @@ class EventRecordsPageDownloadButtonTests(unittest.TestCase):
         labels = [b.label for b in at.download_button]
         self.assertIn("⬇️ Download CSV", labels)
 
+    def test_page_also_renders_a_download_pdf_button(self):
+        at = AppTest.from_file(EVENT_RECORDS_PAGE, default_timeout=30)
+        at.run()
+        self.assertFalse(bool(at.exception))
+        labels = [b.label for b in at.download_button]
+        self.assertIn("⬇️ Download PDF", labels)
+
+
+class EventRecordsPdfRowCapTests(unittest.TestCase):
+    """
+    Phase V2.6 - PDF rendering costs ~5ms/row and st.download_button
+    evaluates its data eagerly on every page rerun (not just on click),
+    so the PDF export is deliberately capped independently of the "Max
+    rows to show" slider (which the CSV export still honors in full).
+    These tests exercise the actual capping mechanism (DataFrame.head())
+    on real event rows, not just a source-text check.
+    """
+
+    def setUp(self):
+        self.events_to_dataframe = _load_events_to_dataframe()
+
+    def _many_events(self, count: int) -> list[dict]:
+        return [
+            {
+                "event_time": f"2026-08-21 10:{i % 60:02d}:00",
+                "equipment": f"Eq{i}",
+                "tag": f"Tag{i}",
+                "severity": "alarm",
+                "condition": "high_alarm",
+                "value": float(i),
+                "unit": "kW",
+                "message": "",
+            }
+            for i in range(count)
+        ]
+
+    def test_cap_reduces_row_count_when_more_events_than_cap(self):
+        df = self.events_to_dataframe(self._many_events(250))
+        capped = df.head(200)
+        self.assertEqual(len(capped), 200)
+        self.assertEqual(len(df), 250)
+
+    def test_cap_does_not_truncate_when_fewer_events_than_cap(self):
+        df = self.events_to_dataframe(self._many_events(50))
+        capped = df.head(200)
+        self.assertEqual(len(capped), 50)
+
+    def test_page_source_applies_a_row_cap_before_building_the_pdf(self):
+        source = Path(EVENT_RECORDS_PAGE).read_text(encoding="utf-8")
+        pdf_section_start = source.index("with download_cols[1]:")
+        pdf_section = source[pdf_section_start:]
+        self.assertIn("PDF_ROW_CAP", pdf_section)
+        self.assertIn(".head(PDF_ROW_CAP)", pdf_section)
+
 
 if __name__ == "__main__":
     unittest.main()

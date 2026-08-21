@@ -14,8 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ai.event_store import EventStore
 from ai.trend_analyzer import format_number
-from ui.csv_export import dataframe_to_csv_bytes, export_filename
+from ui.csv_export import dataframe_to_csv_bytes
+from ui.csv_export import export_filename as export_csv_filename
 from ui.data_access import MACHINE_DATABASE_PATH, get_event_filter_options
+from ui.pdf_export import build_pdf_report
+from ui.pdf_export import export_filename as export_pdf_filename
 
 
 st.title("📋 Event Records")
@@ -125,12 +128,44 @@ def _highlight_severity(row: pd.Series) -> list[str]:
     return [color] * len(row)
 
 
-st.download_button(
-    "⬇️ Download CSV",
-    data=dataframe_to_csv_bytes(df),
-    file_name=export_filename("event_records"),
-    mime="text/csv",
-    help="Exports exactly the rows shown below, with the current Severity/Equipment/Tag/Time range filters applied.",
-)
+download_cols = st.columns(2)
+
+with download_cols[0]:
+    st.download_button(
+        "⬇️ Download CSV",
+        data=dataframe_to_csv_bytes(df),
+        file_name=export_csv_filename("event_records"),
+        mime="text/csv",
+        help="Exports exactly the rows shown below, with the current Severity/Equipment/Tag/Time range filters applied.",
+    )
+
+with download_cols[1]:
+    # PDF rendering costs ~5ms/row (reportlab Paragraph flowables per
+    # cell) and st.download_button evaluates `data=` eagerly on every
+    # page rerun, not just on click - at the slider's full 2000-row
+    # max that's ~11s added to EVERY interaction on this page, not just
+    # downloads. Capped independently of "Max rows to show" (which CSV
+    # still honors in full) so the PDF stays fast regardless of that
+    # slider; a report reader also has less use for 2000 printed rows
+    # than a CSV importer does.
+    PDF_ROW_CAP = 200
+    pdf_df = df.head(PDF_ROW_CAP)
+
+    report_parameters = {
+        "Severity": severity,
+        "Equipment": equipment,
+        "Tag": tag,
+        "Time range": time_range_label,
+        "Matching events": f"{total_matching} total, {len(events)} shown on screen"
+        + (f", first {PDF_ROW_CAP} in this PDF" if len(pdf_df) < len(df) else ""),
+    }
+    st.download_button(
+        "⬇️ Download PDF",
+        data=build_pdf_report("Event Records Report", report_parameters, pdf_df, highlight_column="Severity"),
+        file_name=export_pdf_filename("event_records"),
+        mime="application/pdf",
+        help=f"Printable report with the active filters shown at the top. Capped at {PDF_ROW_CAP} rows for "
+        "readability/generation time - use CSV for the full export.",
+    )
 
 st.dataframe(df.style.apply(_highlight_severity, axis=1), width="stretch", height=700)

@@ -6759,3 +6759,103 @@ precise dependency trace used in the investigation phase.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.6 — PDF Reporting
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Extend V1.5's CSV export with a PDF option for Event Records and the
+Energy Dashboard summaries - same filtered/on-screen data, preserving
+units, timestamps, classifications, unavailable states, and the
+active filters/date range. No custom report designer.
+
+### 1. New dependency: `reportlab`
+
+`pypdf` (already in `requirements.txt`) only reads/extracts existing
+PDFs (manufacturer manuals) - a genuine PDF-*generation* library was
+needed. Added `reportlab>=4.0,<5` - pure Python, no system binary
+dependency (unlike e.g. weasyprint/wkhtmltopdf), the standard choice
+for exactly this "title + parameters + table" shape of report.
+
+### 2. New: `ui/pdf_export.py`
+
+Mirrors `ui/csv_export.py`'s own minimal scope exactly: takes a title,
+a small "report parameters" header block, and a plain DataFrame each
+page already built for its CSV export - computes nothing, fetches
+nothing. `build_pdf_report()` renders one title, one parameter block,
+one table (reportlab `SimpleDocTemplate`/`Table`/`Paragraph`
+flowables - automatic multi-page pagination for longer tables, no
+custom layout code). `highlight_column` reuses the exact same
+ALARM/WARNING colors as the existing on-screen/CSV severity
+convention, so a color means the same thing on screen, in the CSV, and
+on paper. Cell values are XML-escaped before insertion (reportlab's
+`Paragraph` interprets a small markup subset) - live-tested with real
+`&`/`<`/`>` characters to confirm they render as literal text, not
+broken/dropped markup.
+
+### 3. Real performance finding, addressed before shipping
+
+Live-measured, not assumed: PDF generation costs ~5ms/row (reportlab
+`Paragraph` per cell) - trivial for the Energy Dashboard's small,
+fixed-size tables, but at Event Records' full 2000-row "Max rows to
+show" slider maximum, a real test run took **11 seconds**. Since
+`st.download_button`'s `data=` argument is evaluated eagerly on every
+page rerun (not just on click - the same behavior the V1.5 CSV export
+already relies on, harmless there since CSV serialization is cheap),
+an unbounded PDF would have added up to 11s to every single
+interaction on the page, not just PDF downloads. Fixed by capping the
+PDF specifically at 200 rows (`PDF_ROW_CAP`, independent of the "Max
+rows to show" slider, which the CSV export still honors in full) -
+measured at ~1s, and the button's own help text plus the report's
+"Matching events" parameter line both say so honestly when the cap is
+actually in effect. The Energy Dashboard's two PDFs (Main Energy: ~16
+fixed metric rows; Equipment Power Breakdown: one row per equipment
+instance) needed no cap - neither scales with a user-adjustable range.
+
+### 4. Report layout - restructured for print, not just re-serialized
+
+Event Records' PDF uses the SAME `events_to_dataframe()` output as the
+CSV, with the active Severity/Equipment/Tag/Time-range filters shown
+as report parameters at the top (not on every row, unlike the CSV).
+The Energy Dashboard's Main Energy PDF drops the CSV's repeated
+Plant/Period Start/Period End/Generated At columns (constant on every
+row of that flat, CSV-friendly shape) into a header block instead,
+leaving a clean Metric/Value/Unit/Classification/Notes table - same
+underlying values, restructured for a readable printed page rather
+than repeated 15+ times down a column. No value is dropped or
+recomputed by this restructuring.
+
+### Tests
+
+44 new tests, all passing: 16 in `tests/test_pdf_export.py` (valid/
+parseable PDF bytes verified by actually reading them back with
+`pypdf` - not just checking byte length -, title/parameters/column-
+headers/cell-values present in extracted text, `&`/`<`/`>` escaping,
+row highlighting never changes cell content, empty-dataframe and
+unrecognized-highlight-value edge cases, landscape-vs-portrait page
+selection), plus new tests added to the existing V1.5 export test
+files: `tests/test_event_records_csv_export.py` (+3 - PDF button
+presence, the 200-row cap exercised against real `events_to_dataframe()`
+output, a source-level check the cap is actually wired in before the
+PDF is built) and `tests/test_energy_dashboard_csv_export.py` (+4 - PDF
+button presence, the header-column-extraction reshaping verified
+against a real `build_main_energy_dataframe()` result).
+
+### Files changed
+
+New: `ui/pdf_export.py`, `tests/test_pdf_export.py`. Changed:
+`requirements.txt` (`reportlab` added), `ui/pages/5_Event_Records.py`,
+`ui/pages/15_Energy_Dashboard.py` (both: PDF download button(s) added
+alongside the existing CSV ones; CSV behavior itself unchanged -
+`export_filename` import renamed to `export_csv_filename` to
+disambiguate from the new PDF helper's same-named function, a pure
+rename with no behavior change), `tests/test_event_records_csv_export.py`,
+`tests/test_energy_dashboard_csv_export.py`, `README.md`. **No
+changes** to any deterministic engine, data-access function, or
+existing CSV export behavior.
+
+### PHASE STATUS: PASS
+
+---

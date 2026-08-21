@@ -14,7 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.environment import get_active_environment
 from ui import energy_dashboard_data as d
-from ui.csv_export import dataframe_to_csv_bytes, export_filename
+from ui.csv_export import dataframe_to_csv_bytes
+from ui.csv_export import export_filename as export_csv_filename
+from ui.pdf_export import build_pdf_report
+from ui.pdf_export import export_filename as export_pdf_filename
 
 """
 Phase 7 - Energy Dashboard & Plant Comparison. Presentation layer only:
@@ -328,31 +331,70 @@ if breakdown:
     st.dataframe(breakdown_df, hide_index=True, width="stretch")
 
     export_df = build_equipment_power_breakdown_dataframe(plant_code, breakdown_df)
-    st.download_button(
-        "⬇️ Download Equipment Power Breakdown CSV",
-        data=dataframe_to_csv_bytes(export_df),
-        file_name=export_filename(f"equipment_power_breakdown_{plant_code}"),
-        mime="text/csv",
-        help="Exports the live power snapshot above - this is a current reading, not tied to the selected date range.",
-        key="download_equipment_power_breakdown_csv",
-    )
+    breakdown_download_cols = st.columns(2)
+    with breakdown_download_cols[0]:
+        st.download_button(
+            "⬇️ Download Equipment Power Breakdown CSV",
+            data=dataframe_to_csv_bytes(export_df),
+            file_name=export_csv_filename(f"equipment_power_breakdown_{plant_code}"),
+            mime="text/csv",
+            help="Exports the live power snapshot above - this is a current reading, not tied to the selected date range.",
+            key="download_equipment_power_breakdown_csv",
+        )
+    with breakdown_download_cols[1]:
+        st.download_button(
+            "⬇️ Download Equipment Power Breakdown PDF",
+            data=build_pdf_report(
+                "Equipment Power Breakdown Report",
+                {"Plant": plant_code.upper(), "Snapshot": "Current reading, not tied to the selected date range"},
+                breakdown_df,
+            ),
+            file_name=export_pdf_filename(f"equipment_power_breakdown_{plant_code}"),
+            mime="application/pdf",
+            help="Same snapshot as the CSV export, formatted as a printable report.",
+            key="download_equipment_power_breakdown_pdf",
+        )
 else:
     st.caption("No live power readings available for a breakdown right now.")
 
 _data_and_assumptions_expander("Main Energy", {**period_kpis, **month_kpis, **{"production_intensity_" + k2: v2 for k2, v2 in intensity.items()}})
 
-# --- CSV export - Main Energy summary for the currently selected plant/period ---
+# --- CSV/PDF export - Main Energy summary for the currently selected plant/period ---
 main_energy_df = build_main_energy_dataframe(
     plant_code, period_start, period_end, period_kpis, month_kpis, billing_peak, normalized_cards
 )
 
-st.download_button(
-    "⬇️ Download Main Energy CSV",
-    data=dataframe_to_csv_bytes(main_energy_df),
-    file_name=export_filename(f"energy_dashboard_{plant_code}"),
-    mime="text/csv",
-    help="Exports the Main Energy summary above for the currently selected plant and date range.",
-)
+main_energy_download_cols = st.columns(2)
+
+with main_energy_download_cols[0]:
+    st.download_button(
+        "⬇️ Download Main Energy CSV",
+        data=dataframe_to_csv_bytes(main_energy_df),
+        file_name=export_csv_filename(f"energy_dashboard_{plant_code}"),
+        mime="text/csv",
+        help="Exports the Main Energy summary above for the currently selected plant and date range.",
+    )
+
+with main_energy_download_cols[1]:
+    # Plant/Period Start/Period End/Generated At are constant across
+    # every row of main_energy_df (a flat CSV-friendly shape) - shown
+    # once as report parameters here instead of repeated on every
+    # printed row. Same underlying values, no recomputation.
+    pdf_table_df = main_energy_df.drop(columns=["Plant", "Period Start", "Period End", "Generated At"])
+    st.download_button(
+        "⬇️ Download Main Energy PDF",
+        data=build_pdf_report(
+            "Main Energy Report",
+            {
+                "Plant": main_energy_df["Plant"].iloc[0],
+                "Period": f"{main_energy_df['Period Start'].iloc[0]} to {main_energy_df['Period End'].iloc[0]}",
+            },
+            pdf_table_df,
+        ),
+        file_name=export_pdf_filename(f"energy_dashboard_{plant_code}"),
+        mime="application/pdf",
+        help="Same summary as the CSV export, formatted as a printable report.",
+    )
 
 st.divider()
 
