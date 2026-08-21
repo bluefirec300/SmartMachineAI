@@ -57,7 +57,9 @@ can_edit = auth.can_edit("admin", "engineer")
 st.title("📚 Documentation")
 st.caption(
     "Manuals/datasheets/photos mapped to equipment. PDF and image files only. "
-    "Every upload, delete, and download is recorded in the audit log below."
+    "Every upload, delete, and download is recorded in the audit log below. "
+    "Reference manuals marked ⚠️ Synthetic placeholder are illustrative only, not a genuine "
+    "manufacturer document - real sourcing was attempted and did not succeed for these."
 )
 
 if not can_edit:
@@ -106,6 +108,27 @@ def _attachment_label(eq: dict) -> str:
     if count == 0:
         return f"{eq['display_name']} — no attachments"
     return f"{eq['display_name']} — {count} file{'s' if count != 1 else ''}"
+
+
+def _is_synthetic_reference_manual(doc: dict) -> bool:
+    """
+    Phase V1.3 - reference manuals (equipment_id IS NULL - shared
+    across every instance of a brand/model, never a site upload) that
+    are NOT one of the 25 genuine, sourced manufacturer PDFs. There is
+    no dedicated "is_synthetic" column - every genuinely-sourced real
+    manual's filename carries a "_REAL" suffix (see FACTORY_AI_
+    DEVELOPMENT_STATUS.md's document-lookup phase for how that
+    convention was established), so its absence on a reference manual
+    is a reliable, already-existing signal rather than a new one this
+    phase invents. Never applied to a site-uploaded document (those are
+    an engineer's own real photo/file, not a manufacturer manual, and
+    are never mistakenly flagged here).
+    """
+    if doc["equipment_id"] is not None:
+        return False
+
+    file_path = doc.get("file_path") or ""
+    return "REAL" not in Path(file_path).stem.upper()
 
 
 selected_name = st.selectbox(
@@ -259,9 +282,18 @@ else:
             view_col, download_col, delete_col,
         ) = st.columns(TABLE_WIDTHS)
 
-        title_col.write(label if file_exists else f"{label} (not stored locally)")
+        is_synthetic = _is_synthetic_reference_manual(doc)
+        title_text = label if file_exists else f"{label} (not stored locally)"
+        title_col.write(f"⚠️ {title_text}" if is_synthetic else title_text)
         type_col.write((doc["file_type"] or "-").upper())
-        source_col.write("Uploaded" if doc["equipment_id"] is not None else "Reference manual")
+
+        if doc["equipment_id"] is not None:
+            source_col.write("Uploaded")
+        elif is_synthetic:
+            source_col.write("Reference manual")
+            source_col.caption("⚠️ Synthetic placeholder — not a real manufacturer document")
+        else:
+            source_col.write("Reference manual")
         uploaded_col.write(doc["uploaded_at"])
         by_col.write(doc["uploaded_by"] or "-")
 

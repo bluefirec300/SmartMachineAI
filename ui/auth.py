@@ -79,6 +79,21 @@ def _login_form() -> None:
         return
 
     manager = UserManager(database_path=DEFAULT_DATABASE_PATH)
+
+    # Phase V1.3 - checked BEFORE the password attempt, so a locked
+    # account gets a distinct, honest message instead of the generic
+    # "incorrect" one (which would otherwise be technically true but
+    # misleading - the password may well be correct, the account is
+    # just temporarily locked out from repeated failed attempts).
+    lockout = manager.get_lockout_status(username)
+
+    if lockout["locked"]:
+        st.error(
+            "This account is temporarily locked after repeated failed sign-in attempts. "
+            f"Try again after {lockout['locked_until']} UTC, or ask an administrator to reset the password."
+        )
+        return
+
     user = manager.authenticate(username, password)
 
     if user is None:

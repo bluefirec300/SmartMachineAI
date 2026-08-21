@@ -5274,3 +5274,133 @@ per tag, overwritten each cycle, not a time series).
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V1.3 — New-Factory Configuration & Security Readiness
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Review what a real deployment needs to confirm before treating this
+system's numbers as production-trustworthy, close the two genuine
+gaps found during that review (login-attempt protection, unmarked
+synthetic documents), and produce a single checklist tying it all
+together - without inventing real engineering values, and without
+touching RBAC or any deterministic engine.
+
+### 1. Area/System taxonomy - reviewed, not changed
+
+Confirmed still exactly what the V1 roadmap review found: **all 16
+areas and all 26 systems remain `inferred_from_simulation`** - zero
+rows confirmed against a real factory layout yet. The existing
+confirm-by-editing mechanism (Factory Configuration page,
+🟢 confirmed / ⚪ inferred badges) already does everything needed here -
+this is a site-data-entry task for whoever sets up a real factory, not
+a missing feature. Documented as item 1 of the new setup checklist.
+
+### 2. SIMULATION_TUNING review - reviewed, not changed
+
+Enumerated every registry carrying a `SIMULATION_TUNING` provenance
+tag: `engine/anomaly_targets.py`, `engine/health_targets.py`,
+`engine/performance_targets.py`, `engine/maintenance_intelligence_
+targets.py`, `engine/opportunity_targets.py`. Per explicit instruction,
+**no real engineering values were invented or changed** - these are
+reasonable engineering-judgment defaults for a dev-stage simulation,
+already honestly labeled as such via the existing `USER_CONFIGURED`/
+`ENGINEERING_RULE`/`MANUFACTURER_REFERENCE`/`STATISTICAL`/
+`SIMULATION_TUNING` provenance vocabulary (unchanged). Documented as
+item 3 of the new setup checklist, pointing at the exact registry
+files rather than restating values that would go stale.
+
+### 3. Energy tariff - reviewed, already sufficiently clear
+
+`ui/pages/13_Factory_Configuration.py`'s tariff form already sets
+`is_simulated=False` when a real tariff is entered, and
+`SIMULATED_TARIFF_NOTICE` already renders a visible warning wherever a
+still-simulated tariff is in effect. No code change needed here -
+this requirement was already satisfied by existing work. Documented
+as item 2 of the setup checklist for discoverability.
+
+### 4. Synthetic equipment documents - now visibly marked (real gap, fixed)
+
+Found a genuine gap: the 3 synthetic reference manuals (Eaton 9395
+UPS, Donaldson Torit dust collector, IMA filling line) had NO visible
+marking anywhere in the Documentation page - the existing "Source"
+column only ever showed "Uploaded" vs "Reference manual", never real-
+vs-synthetic. `ui/pages/8_Documentation.py` gained
+`_is_synthetic_reference_manual()` - derived from the same "_REAL"
+filename convention every one of the 25 genuinely-sourced manuals
+already carries (no new database column, no schema change), verified
+directly against all 28 real filenames in the live database. Synthetic
+reference manuals now show a `⚠️ Synthetic placeholder` marker on both
+the title and the Source column; the page's own caption explains the
+convention. Site-uploaded documents (an engineer's own real photo/
+file) are never mistakenly flagged, regardless of filename.
+
+### 5. Login-attempt protection - new
+
+`config/user_manager.py` gained two additive columns on `users`
+(`failed_login_attempts`, `locked_until` - via the same idempotent
+`ALTER TABLE ... IF NOT EXISTS`-style pattern every other migrator in
+this project uses) and per-username lockout: 5 failed attempts locks
+the account for 15 minutes (`MAX_FAILED_LOGIN_ATTEMPTS`/
+`LOCKOUT_MINUTES`, both named constants). `authenticate()`'s return
+contract (`dict | None`) is completely unchanged for any other caller;
+a new `get_lockout_status()` read-only method lets `ui/auth.py`'s
+login form show a distinct "temporarily locked" message instead of the
+generic "incorrect username or password" one. A successful login or an
+admin password reset both clear the lockout. Every lockout event is
+written to the existing `audit_log` table - no new logging mechanism.
+
+**Deliberately per-username only, not per-IP/global** - this is a
+small internal-tool user base (an engineering department), not a
+public-facing service; a global rate limiter was judged out of
+proportion for V1 "sensible" protection. **RBAC (roles, permissions,
+`ROLES` tuple) is completely untouched** - this is purely an
+authentication-attempt counter alongside the existing password check.
+
+### 6. New-factory setup checklist - new
+
+`docs/NEW_FACTORY_SETUP_CHECKLIST.md` - the 7 items above (plus PLC
+connection, user accounts, and backup destination) as a single,
+concrete, page-by-page checklist for whoever brings up a real
+deployment. No new code required to act on any item - every one is
+done through an existing admin UI page. Referenced from `README.md`.
+
+### Tests
+
+35 new tests, all passing:
+- `tests/test_user_manager_lockout.py` (12) - lockout does not trigger
+  early, triggers exactly at the threshold, locks out even the correct
+  password, records to the audit log, is cleared by an admin password
+  reset, never touches role/active, and a static source check confirms
+  `ui/auth.py` checks lockout status before attempting authentication
+  (a live AppTest of the real login form was deliberately NOT used
+  here - it would need 5 real failed logins against a real account in
+  the live config.db to prove the message renders, permanently
+  mutating that account's lockout counters; the isolated unit tests
+  above already fully cover the actual behavior).
+- `tests/test_documentation_synthetic_marking.py` (6, +6 subtests) -
+  all 3 known-synthetic filenames flagged, all 3 spot-checked real
+  filenames (including the one real manual NOT under `manuals/real/`)
+  never flagged, site-uploaded documents never flagged regardless of
+  filename, and a live `AppTest` confirms the real Documentation page
+  loads cleanly and its caption mentions the synthetic-placeholder
+  convention.
+
+Full regression after these changes: see closeout report for the
+exact current numbers.
+
+### Files changed
+
+New: `docs/NEW_FACTORY_SETUP_CHECKLIST.md`, `tests/test_user_manager_
+lockout.py`, `tests/test_documentation_synthetic_marking.py`. Changed:
+`config/user_manager.py` (additive schema + lockout logic), `ui/auth.py`
+(lockout-aware login message), `ui/pages/8_Documentation.py` (synthetic
+marking), `README.md` (checklist pointer). **No changes** to any
+deterministic engine, Ask AI, database schema beyond the two additive
+`users` columns, or RBAC.
+
+### PHASE STATUS: PASS
+
+---

@@ -135,3 +135,7 @@ each phase's schema.
 - `FACTORY_AI_DEVELOPMENT_STATUS.md` - the full phase-by-phase build
   history, what's tested, what's still a known gap, and the current
   roadmap toward a first production (V1) deployment.
+- `docs/NEW_FACTORY_SETUP_CHECKLIST.md` - what an engineer needs to
+  configure (area/system taxonomy, tariff, engineering thresholds,
+  real PLC connection, user accounts) before treating a deployment as
+  production-ready.

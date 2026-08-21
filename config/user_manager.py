@@ -5,7 +5,7 @@ import hashlib
 import secrets
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,16 @@ ROLES = ("admin", "engineer", "operator")
 # what is currently a small internal-tool user base). 200k iterations
 # matches OWASP's current minimum recommendation for this algorithm.
 PBKDF2_ITERATIONS = 200_000
+
+# Phase V1.3 - login-attempt protection. Per-username lockout (not
+# per-IP/global - this is a small internal-tool user base per an
+# equipment-monitoring department, not a public-facing service; a
+# global rate limiter is deliberately out of scope for V1, matching
+# "sensible" protection rather than enterprise-grade infrastructure).
+# Does NOT touch ROLES/RBAC in any way - purely an authentication-
+# attempt counter alongside the existing password check.
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -98,6 +108,19 @@ class UserManager:
                 )
                 """
             )
+
+            # Phase V1.3 - additive-only, idempotent (same convention as
+            # every other *_migrator.py in this project). RBAC columns
+            # above (role, active) are untouched - these two are purely
+            # about failed-attempt tracking.
+            users_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "failed_login_attempts" not in users_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0")
+            if "locked_until" not in users_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+
             connection.commit()
         finally:
             connection.close()
@@ -186,7 +209,47 @@ class UserManager:
         finally:
             connection.close()
 
+    @staticmethod
+    def _is_locked(row: sqlite3.Row) -> bool:
+        locked_until = row["locked_until"]
+        if not locked_until:
+            return False
+        try:
+            return datetime.utcnow() < datetime.fromisoformat(locked_until)
+        except ValueError:
+            return False
+
+    def get_lockout_status(self, username: str) -> dict[str, Any]:
+        """
+        Read-only - never modifies state and never counts as an
+        attempt. `ui/auth.py` calls this BEFORE attempting a password
+        check, so a locked account can be told apart from a wrong
+        password without authenticate() needing a second return shape
+        (it stays a plain dict | None, unchanged for any other caller).
+        """
+        connection = self._connect()
+
+        try:
+            row = connection.execute(
+                "SELECT locked_until, failed_login_attempts FROM users WHERE username = ?",
+                (username.strip().lower(),),
+            ).fetchone()
+
+            if row is None or not self._is_locked(row):
+                return {"locked": False, "locked_until": None}
+
+            return {"locked": True, "locked_until": row["locked_until"]}
+        finally:
+            connection.close()
+
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
+        """
+        Unchanged return contract (dict | None) for every existing
+        caller. A locked account returns None here too (same as a
+        wrong password) - callers that want to DISTINGUISH "locked" from
+        "wrong password" for messaging should check get_lockout_status()
+        first, as ui/auth.py's login form now does.
+        """
         connection = self._connect()
 
         try:
@@ -198,13 +261,18 @@ class UserManager:
             if row is None:
                 return None
 
+            if self._is_locked(row):
+                return None
+
             expected_hash = _hash_password(password, row["password_salt"])
 
             if not secrets.compare_digest(expected_hash, row["password_hash"]):
+                self._record_failed_attempt(connection, row)
+                connection.commit()
                 return None
 
             connection.execute(
-                "UPDATE users SET last_login_at = ? WHERE id = ?",
+                "UPDATE users SET last_login_at = ?, failed_login_attempts = 0, locked_until = NULL WHERE id = ?",
                 (_utc_timestamp(), row["id"]),
             )
             connection.commit()
@@ -212,6 +280,27 @@ class UserManager:
             return self._row_to_dict(row)
         finally:
             connection.close()
+
+    def _record_failed_attempt(self, connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+        attempts = (row["failed_login_attempts"] or 0) + 1
+        locked_until = None
+
+        if attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+            locked_until = (datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)).isoformat(timespec="seconds")
+
+        connection.execute(
+            "UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
+            (attempts, locked_until, row["id"]),
+        )
+
+        if locked_until:
+            self._write_audit_log(
+                connection,
+                username="system",
+                action="account_locked",
+                entity_name=row["username"],
+                details=f"locked after {attempts} failed login attempts, until {locked_until} UTC",
+            )
 
     def get_users(self) -> list[dict[str, Any]]:
         connection = self._connect()
@@ -293,8 +382,12 @@ class UserManager:
         connection = self._connect()
 
         try:
+            # Also clears any lockout - an admin resetting the password
+            # is a deliberate, authenticated intervention that should
+            # un-stick a locked account, not leave it locked against the
+            # very password they just set.
             connection.execute(
-                "UPDATE users SET password_hash = ?, password_salt = ? WHERE username = ?",
+                "UPDATE users SET password_hash = ?, password_salt = ?, failed_login_attempts = 0, locked_until = NULL WHERE username = ?",
                 (password_hash, salt, username.strip().lower()),
             )
 
