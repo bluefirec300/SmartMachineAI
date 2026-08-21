@@ -284,9 +284,52 @@ streamlit run ui/Home.py --server.headless true --server.port 8501
   `docs/superpowers/plans/2026-08-13-scada-floor-plan-live-view.md` for
   the design and implementation plan.
 
+- **System Health** (Phase V2.1) - is SmartFactoryAI's own software
+  running correctly, not the factory - see "System Health" below for
+  the full design. Deliberately distinct from Equipment Health/Data
+  Health, which are both about factory telemetry, not this app's own
+  processes.
+
 Auth: `ui/auth.py`'s `require_login()` gates every page from `Home.py`;
 individual pages check `ui.auth.can_edit()`/`has_role()` for
-write/admin-only controls.
+write/admin-only controls. (This page list predates several later
+phases - e.g. Energy Dashboard, Anomalies, Energy Opportunities,
+Savings Verification, Equipment Health/Asset Performance/Data Health,
+Factory Configuration, Production Context all exist and are not listed
+above; not backfilled here, out of scope for this phase.)
+
+## System Health (`ui/system_health_data.py`, `ui/pages/22_System_Health.py`)
+
+Phase V2.1. Answers "is the SmartFactoryAI software itself running
+correctly" for an engineer with no terminal/SSH access - all 13
+systemd services (3 core: `plc_logger`, `event_monitor`, `streamlit`;
+9 `*_worker` services; `production_simulator`), each showing running/
+stopped state, uptime, restart count, last known activity, and a soft
+recent-error scan.
+
+- **No sudo required**: every call is a read-only `systemctl show`/
+  `journalctl -u` query - confirmed these need no elevated privilege
+  for the same user `streamlit.service` already runs as
+  (`User=test`, group `adm`).
+- **No invented health information**: every field is a real systemd
+  property, a timestamp a service already writes to a table it owns as
+  part of its real job, or one of `app/historian_maintenance_worker.py`'s
+  existing marker files - never a new duplicate heartbeat mechanism.
+  An unavailable signal shows "Unavailable", never a guess.
+- **Landmine already fixed once**: a naive "does this log line contain
+  the word 'error'" scan false-positived on every worker's own healthy
+  `cycle: {..., 'errors': 0, ...}` summary line. `_is_error_line()`
+  parses the worker's own reported count first and only falls back to
+  a keyword scan for lines that aren't that shape (an actual exception/
+  traceback/"X failed:" message). If a new worker's log format doesn't
+  fit either shape, check this function before trusting its error count.
+- Several workers only write to their output table when something
+  worth recording actually happens (e.g. `opportunity_worker`'s
+  `energy_opportunities.last_updated`, `energy_kpi_worker`'s daily
+  summary) - a long gap since "last activity" is not automatically a
+  failure for those; the page's "What that means" column says so per
+  service rather than implying a uniform per-tick heartbeat that
+  doesn't actually exist.
 
 ## `app/ask.py` pipeline
 

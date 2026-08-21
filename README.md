@@ -59,6 +59,9 @@ back to the plain deterministic text instead).
 - **Equipment Health / Asset Performance / Data Health** - three
   distinct, deliberately-separate deterministic scores: mechanical
   condition, performance-vs-own-history, and telemetry trustworthiness.
+- **System Health** - a fourth, separate kind of health: is
+  SmartFactoryAI's own software (all 13 systemd services) running
+  correctly, with no terminal access required.
 - **Service & Maintenance, Setpoints, Documentation, Factory/Equipment/
   Tag Configuration, User Management, PLC Connectivity** - the
   day-to-day admin and engineering surface.

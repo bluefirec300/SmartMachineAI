@@ -5905,3 +5905,122 @@ plant hardware has never been connected.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.1 — System & Worker Health
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Let an engineer see whether SmartFactoryAI's own software is running
+correctly without a terminal - the first V2 roadmap item. No sudo, no
+invented health data, no duplicate heartbeat mechanism, no changes to
+any deterministic engine or Ask AI.
+
+### 1. Inspection
+
+Confirmed live, without sudo, as the same user `streamlit.service`
+already runs as (`User=test`): `systemctl show`/`journalctl -u` both
+work unprivileged (group `adm` grants journal read access). Surveyed
+all 9 `*_worker.py` scripts plus `production_simulator.py` (a
+dedicated Explore agent) and `historian_maintenance_worker.py` (read
+directly): every worker shares one resilience pattern - an
+`fcntl.flock()` single-instance lock, an infinite loop wrapping each
+cycle's work in its own `try/except Exception` (self-healing at the
+per-cycle level, logs and continues), with `Restart=always` only as a
+backstop for a truly fatal failure. No generic cross-worker "status"
+table exists anywhere in the schema - confirmed by grep before
+concluding that, per the explicit "reuse, don't duplicate" instruction.
+
+### 2. New: `ui/system_health_data.py`
+
+Pure data-access module, no Streamlit imports. For each of the 13
+services: `get_systemd_state()` (real `systemctl show`, unprivileged,
+returns `available=False` rather than a guess if systemd can't be
+reached at all, and separately distinguishes "unit not found on this
+host" from "found but stopped"); `get_activity()` (dispatches to
+whichever existing timestamp that specific service already produces -
+`MAX(time)` from `plc_data` for `plc_logger`, `MAX(event_time)` from
+`machine_events` for `event_monitor`, `MAX(computed_at)`/
+`MAX(updated_at)`/`MAX(last_updated)`/`MAX(evaluated_at)` from each
+worker's own output table - spot-checked against real live values for
+all 11 before wiring in, `None` for `streamlit` since it's
+request-driven and has no tick at all); `get_recent_journal_errors()`
+(scans the last 200 journald lines per service).
+
+**Bug found and fixed during live testing, before this ever reached a
+user**: the first error-scanner naively flagged any line containing
+the word "error"/"failed" - which matched EVERY worker's own healthy
+`cycle: {..., 'errors': 0, ...}` summary line, live-testing showed
+`data_health_history_worker`/`equipment_health_worker` both at
+"200/200 lines flagged" despite being completely healthy (0 real
+errors). Fixed: `_is_error_line()` now parses the worker's own reported
+count from that exact shape first (`'errors': N` / `'failed': N`) and
+trusts it - a genuine `'errors': 3` is still flagged, a healthy
+`'errors': 0` never is - falling back to a keyword scan only for lines
+that aren't that shape (an actual "X failed: ..." message or a bare
+Traceback). Directly satisfies "do not invent health information" -
+the unfixed version would have actively lied about 2 of 13 services.
+
+### 3. New: `ui/pages/22_System_Health.py`
+
+Two tables (Core services: `plc_logger`/`event_monitor`/`streamlit`;
+Background workers: the 9 `*_worker` services + `production_simulator`),
+color-coded via the existing shared `ui/table_style.py` palette
+(POSITIVE=running, WARNING=stopped, NEUTRAL=not-installed/unknown -
+no new visual language introduced). Every row shows state, uptime,
+restart count, last activity with a per-service "what that means"
+explanation (several workers only write when something worth recording
+happens, so a long gap is explicitly NOT presented as a failure for
+those), and a recent-error count. An expander gives the actual flagged
+log lines for anything non-zero. Queried live on every page load, no
+caching - correctness over staleness for a health page. Not role-gated
+(same precedent as Equipment Health/Data Health - informational, not a
+destructive admin control).
+
+### 4. Separation from Equipment Health / Data Health
+
+Stated explicitly in the page's own top-of-file docstring, its caption
+("Is the SmartFactoryAI **software itself** running correctly - not
+the factory..."), and cross-linked from Equipment Health/Data Health's
+own territory in `CLAUDE.md`. This page knows nothing about compressors,
+chillers, or tags - only about the 13 processes that make up the
+application itself.
+
+### Tests
+
+36 new tests, all passing, in `tests/test_system_health_data.py`:
+systemctl timestamp parsing (including the "n/a"/"0" sentinels),
+running/stopped/not-found/unreachable state handling, the error-line
+false-positive fix (explicitly tests that `'errors': 0` and `'failed':
+0` are never flagged while a genuine `'errors': 3` or "X failed: ..."
+or bare Traceback still is), max-timestamp queries against a real temp
+SQLite database (never the live one) including missing-table/empty-
+table/unreachable-database edge cases, marker-file reading, the
+time-ago formatter, an end-to-end `get_all_service_health()` check
+confirming all 13 configured services are always returned even when
+every backing call fails, and a live `AppTest` confirming the real
+page renders both tables without exception against this host's actual
+systemd state.
+
+### Files changed
+
+New: `ui/system_health_data.py`, `ui/pages/22_System_Health.py`,
+`tests/test_system_health_data.py`. Changed: `CLAUDE.md` (new page
+documented, "System Health" section added), `README.md` (feature list).
+**No changes** to any deterministic engine, PLC driver, Ask AI, or any
+existing worker script - this phase only reads what they already
+produce.
+
+### Manual checks still needed
+
+- A real browser view of the page (only `AppTest`-verified so far, per
+  the same standing caveat as the V1.5 CSV export buttons).
+- Behavior when a service is genuinely stopped/crash-looping hasn't
+  been observed live (deliberately not stopped a real service to test
+  this) - covered instead by the mocked `GetSystemdStateTests`/
+  `GetAllServiceHealthTests` above.
+
+### PHASE STATUS: PASS
+
+---
