@@ -170,13 +170,17 @@ selected = svd.get_intervention(selected_id)
 
 overview_cols = st.columns(3)
 with overview_cols[0]:
-    st.metric("Status", selected["engineer_status"])
-    st.metric("Action category", selected["action_category"])
+    # Markdown, not st.metric() - these can be long enum/identifier
+    # strings (e.g. "VERIFICATION_IN_PROGRESS", a full equipment
+    # instance key) that read oversized/awkward at st.metric()'s large
+    # KPI-number font size.
+    st.markdown(f"**Status**  \n{selected['engineer_status']}")
+    st.markdown(f"**Action category**  \n{selected['action_category']}")
 with overview_cols[1]:
     st.metric("Plant", selected["plant_code"].upper())
-    st.metric("Equipment", selected["instance_key"])
+    st.markdown(f"**Equipment**  \n{selected['instance_key']}")
 with overview_cols[2]:
-    st.metric("Recorded by", selected["recorded_by"])
+    st.markdown(f"**Recorded by**  \n{selected['recorded_by']}")
     st.metric("Occurrences verified", len(svd.get_verification_history(selected["id"])))
 
 st.markdown(f"**Action description:** {selected['action_description']}")
@@ -249,7 +253,7 @@ else:
                 st.caption(svd.EVIDENCE_QUALITY_EXPLANATIONS[evaluation["confidence"]])
 
             money_cols = st.columns(3)
-            money_cols[0].markdown(f"**Energy saving:** {evaluation['verified_energy_kwh']:.3f} kWh" if evaluation["verified_energy_kwh"] is not None else "**Energy saving:** Unavailable")
+            money_cols[0].markdown(f"**Energy saving:** {evaluation['verified_energy_kwh']:.2f} kWh" if evaluation["verified_energy_kwh"] is not None else "**Energy saving:** Unavailable")
             pct = evidence_meta.get("energy_saving_percentage")
             money_cols[1].markdown(f"**Percentage saving:** {pct:.2f}%" if pct is not None else "**Percentage saving:** Unavailable")
             money_cols[2].markdown(f"**Cost saving:** {_fmt_money(evaluation['verified_cost'], evaluation.get('verified_cost_currency'))}")

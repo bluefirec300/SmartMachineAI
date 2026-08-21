@@ -20,6 +20,7 @@ from ui import auth
 from ui import savings_verification_data as svd
 from ui.currency_format import format_money
 from ui.data_access import dismiss_opportunity_action, get_opportunities, get_opportunity_filter_options, get_plants
+from ui.evidence_display import render_readable
 
 
 st.title("Energy Opportunities")
@@ -213,7 +214,7 @@ for label, key in (
             st.write("None recorded.")
             continue
         try:
-            st.json(json.loads(raw))
+            render_readable(json.loads(raw))
         except (TypeError, ValueError):
             st.write(raw)
 

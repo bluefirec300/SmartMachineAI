@@ -13,13 +13,17 @@ Savings Verification, Energy Opportunities) keeps its own existing
 pastel palette untouched - rewiring those was out of scope and is not
 done here.
 
-Five semantic tiers, background/text/accent triples chosen for a
-muted, higher-contrast "dashboard" look (subtle tint + a left accent
-stripe) rather than the brighter flat-pastel fill used elsewhere in
-this app. Callers map their OWN existing deterministic state/status
-values onto these five tiers - this module never invents a new
-classification, it only supplies presentation for classifications the
-respective engine already produces.
+Revision (user feedback): the first version of this palette used
+muted, low-saturation tints - reported as too hard to tell apart
+(green vs. grey in particular). Replaced with the SAME bright, fully-
+saturated pastel-fill convention already used by Event Records/
+Anomalies (`#ffb3b3`/`#ffe6a3`/`#d6e9ff`/etc., dark text, no accent
+border) for consistency and clearer at-a-glance differentiation,
+rather than inventing a second, competing visual language. Callers map
+their OWN existing deterministic state/status values onto these five
+tiers - this module never invents a new classification, it only
+supplies presentation for classifications the respective engine
+already produces.
 """
 
 POSITIVE = "positive"  # e.g. improving / the best available status
@@ -28,13 +32,15 @@ CAUTION = "caution"    # e.g. degrading / attention-worthy
 WARNING = "warning"    # e.g. significantly degrading / poor
 NEUTRAL = "neutral"    # e.g. insufficient evidence / unavailable / not classified
 
-_PALETTE: dict[str, tuple[str, str, str]] = {
-    # (background, text, accent)
-    POSITIVE: ("#e6f4ea", "#1e6b3f", "#2f7d52"),
-    STABLE: ("#eaf0f4", "#2c4a63", "#3f7290"),
-    CAUTION: ("#faf0da", "#7a5510", "#b3811f"),
-    WARNING: ("#f8e2df", "#8a2f22", "#a63f34"),
-    NEUTRAL: ("#eef0f2", "#495057", "#7a8390"),
+_PALETTE: dict[str, tuple[str, str]] = {
+    # (background, text) - same values as Event Records'/Anomalies' own
+    # severity_colors dicts, so a color means the same thing everywhere
+    # in the app.
+    POSITIVE: ("#b3ffb3", "#1a1a1a"),
+    STABLE: ("#d6e9ff", "#1a1a1a"),
+    CAUTION: ("#ffe6a3", "#1a1a1a"),
+    WARNING: ("#ffb3b3", "#1a1a1a"),
+    NEUTRAL: ("#e6e6e6", "#1a1a1a"),
 }
 
 
@@ -46,19 +52,17 @@ def row_css(tier: str | None) -> str:
     if colors is None:
         return ""
 
-    background, text, accent = colors
-    return f"background-color: {background}; color: {text}; border-left: 4px solid {accent}; font-weight: 500;"
+    background, text = colors
+    return f"background-color: {background}; color: {text}"
 
 
 def badge_html(label: str, tier: str | None) -> str:
     """A single-value colored badge (for a detail-view header, not a
-    table) in the same muted palette as row_css()."""
-    colors = _PALETTE.get(tier)
-    background, text, accent = colors if colors is not None else ("#eef0f2", "#495057", "#7a8390")
+    table), same palette as row_css()."""
+    background, text = _PALETTE.get(tier, ("#e6e6e6", "#1a1a1a"))
 
     return (
-        f"<span style='background-color:{background}; color:{text}; "
-        f"border-left: 3px solid {accent}; padding:2px 10px 2px 8px; "
+        f"<span style='background-color:{background}; color:{text}; padding:2px 10px; "
         f"border-radius:4px; font-weight:600;'>{label}</span>"
     )
 

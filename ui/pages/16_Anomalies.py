@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ui.data_access import get_anomalies, get_anomaly_filter_options, get_plants
+from ui.evidence_display import render_readable
 
 
 st.title("Anomalies / Engineering Findings")
@@ -106,7 +107,12 @@ def _highlight_severity(row: pd.Series) -> list[str]:
     return [color] * len(row)
 
 
-st.dataframe(df.style.apply(_highlight_severity, axis=1), width="stretch", height=500)
+st.dataframe(
+    df.style.apply(_highlight_severity, axis=1),
+    width="stretch",
+    height=500,
+    column_config={"Finding": st.column_config.TextColumn("Finding", width="large")},
+)
 
 st.divider()
 st.subheader("Finding detail")
@@ -130,8 +136,11 @@ with detail_cols[1]:
     st.metric("Status", selected["status"])
     st.metric("Occurrences (this condition)", selected["occurrence_count"])
 with detail_cols[2]:
-    st.metric("Engineering limit status", selected["engineering_limit_status"] or "-")
-    st.metric("Threshold provenance", selected["threshold_provenance"])
+    # Markdown, not st.metric() - these two values can be long enum
+    # strings (e.g. "warning_exceeded", "MANUFACTURER_REFERENCE") that
+    # read awkwardly at st.metric()'s large KPI-number font size.
+    st.markdown(f"**Engineering limit status**  \n{selected['engineering_limit_status'] or '-'}")
+    st.markdown(f"**Threshold provenance**  \n{selected['threshold_provenance']}")
 
 st.caption(
     f"Baseline type: {selected['baseline_type'] or '-'} · level: {selected['baseline_level'] or '-'} · "
@@ -151,7 +160,7 @@ for label, key in (
             st.write("None recorded.")
             continue
         try:
-            st.json(json.loads(raw))
+            render_readable(json.loads(raw))
         except (TypeError, ValueError):
             st.write(raw)
 

@@ -254,10 +254,10 @@ def calculate_verified_savings(
     # --- VERIFIED / REJECTED determination (item 8) ---
     if result["absolute_energy_saving_kwh"] > 0:
         result["verification_result"] = VERIFICATION_RESULT_VERIFIED
-        result["reason"] = f"VERIFIED - {result['absolute_energy_saving_kwh']:.3f} kWh observed saving across {len(after_surviving_buckets)} comparable, maintenance-clean verification period(s), {adjusted_evidence_quality} evidence."
+        result["reason"] = f"VERIFIED - {result['absolute_energy_saving_kwh']:.2f} kWh observed saving across {len(after_surviving_buckets)} comparable, maintenance-clean verification period(s), {adjusted_evidence_quality} evidence."
     else:
         result["verification_result"] = VERIFICATION_RESULT_REJECTED
-        result["reason"] = f"REJECTED - observed change was {result['absolute_energy_saving_kwh']:.3f} kWh (not a positive saving) across {len(after_surviving_buckets)} comparable, maintenance-clean verification period(s), {adjusted_evidence_quality} evidence. This does not mean a software failure - the measured result did not support the savings claim."
+        result["reason"] = f"REJECTED - observed change was {result['absolute_energy_saving_kwh']:.2f} kWh (not a positive saving) across {len(after_surviving_buckets)} comparable, maintenance-clean verification period(s), {adjusted_evidence_quality} evidence. This does not mean a software failure - the measured result did not support the savings claim."
 
     result["limitations"] = result.get("limitations", [])
     result["assumptions"] = list(evidence["assumptions"]) + [
