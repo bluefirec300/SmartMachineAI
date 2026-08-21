@@ -6330,3 +6330,189 @@ beyond that one footer string.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.4 — Ask AI Fast/Thorough Mode
+
+**Completed:** 2026-08-21
+
+(Requested as "Phase V2.3" - renumbered here to V2.4 since V2.3 was
+already used for the prior Alarm Notification Settings admin UI phase
+earlier the same day. No functional significance, just doc numbering.)
+
+### Objective
+
+Give an engineer a session-level choice between a smaller, hopefully-
+faster local model (Fast, `qwen2.5:3b`) and the existing default
+(Thorough, `qwen2.5:7b`), without touching the deterministic/grounding
+architecture, instant-answer paths, or the provider abstraction's
+existing behavior for anyone who never touches the new selector.
+
+### 1. Model routing - one additive parameter, threaded through unchanged
+
+`ai/providers/provider_factory.py`'s `ProviderFactory.create()` gained
+`model_override: str | None = None` - wins over env var/settings.ini/
+default for Ollama specifically (documented in its own docstring as a
+deliberate one-off override, not a new precedence tier), has zero
+effect on OpenAI (Fast/Thorough names Ollama-specific models).
+Threaded through unchanged: `AIProvider.__init__` ->
+`AskEngine.__init__`/new `AskEngine.set_model_override()`. No new
+provider class, no change to `generate()`/`stream()`, no change to
+`base_provider.py`.
+
+`set_model_override()` deliberately rebuilds ONLY `self.ai_provider`/
+`self.ai_error` in place, not a whole new `AskEngine` - a full
+reconstruction would have silently reset `self._pending` (an
+in-progress clarification menu) and `self._history` (recent-question
+context for follow-up rewriting), a real, avoidable side effect of the
+naive approach.
+
+### 2. UI: `ui/pages/1_Ask_AI.py`
+
+A horizontal radio ("⚡ Fast (qwen2.5:3b)" / "🔍 Thorough
+(qwen2.5:7b)") at the top of the page, defaulting to Thorough (the
+pre-existing behavior, unchanged for anyone who never touches it).
+Switching modes calls `set_model_override()` on the already-cached
+session engine (or constructs one if a prior construction had failed,
+giving mode-switching a natural "retry" side effect) and reruns. The
+already-existing "AI provider: ollama (qwen2.5:7b)" status caption
+immediately reflects the new model - live-verified via `AppTest`
+(`.set_value('fast').run()`) to flip to `qwen2.5:3b` correctly.
+`AskResult` gained a `model` field (alongside the pre-existing
+`provider`) so each answer's own evidence expander shows exactly which
+model produced it, independent of whatever the CURRENT selector says -
+useful once a conversation spans a mode switch.
+
+### 3. Benchmark - real, live-measured, both modes, three representative questions
+
+Run against this project's live simulation database, on this exact
+4-core/no-GPU VM, with the other 13 always-on systemd services running
+normally (i.e. real-world conditions, not an idle/isolated benchmark).
+Raw results:
+
+| Question (intent) | Fast (qwen2.5:3b) | Thorough (qwen2.5:7b) |
+|---|---|---|
+| "is everything ok" (instant/deterministic) | 5.34s | 5.45s |
+| "what is the current power of AC01" (current_data, LLM-phrased) | 183.17s | 162.92s |
+| "why is GEN01 coolant temperature high" (root_cause, LLM-phrased) | **601.18s - TIMED OUT**, fell back to deterministic-only text | 555.7s - succeeded, real LLM-phrased answer |
+
+**Honest, unembellished findings - this did NOT confirm Fast is faster:**
+- **Instant questions**: confirmed identical (~5.3-5.5s) in both
+  modes, as required - the deterministic path never touches either
+  model.
+- **root_cause**: Fast mode (`qwen2.5:3b`) exceeded the 600s
+  `OLLAMA_READ_TIMEOUT` default and never produced an LLM-phrased
+  answer at all, while Thorough (`qwen2.5:7b`) completed in 555.7s -
+  the OPPOSITE of the naive "smaller model = faster" assumption. This
+  is a real, reproduced-once measurement, not a guess.
+- **current_data**: Thorough was also marginally faster than Fast in
+  this run (162.92s vs 183.17s) - though this specific comparison has
+  a disclosed confound: a 91-second parallel `pytest` regression run
+  was executed on this same 4-core VM DURING Fast mode's benchmark
+  window (to verify the code changes didn't break existing tests),
+  adding real competing CPU load exactly when Fast's timings were
+  being measured. Thorough's questions ran afterward, uncontended.
+  This alone could explain some or all of the gap.
+- **Conclusion**: on this hardware, under real background load
+  (4 cores shared with 13 other always-running services plus, in this
+  run, a parallel test suite), Fast mode's speed benefit is NOT
+  established by this benchmark - if anything, Thorough was more
+  reliable for the slowest, most demanding question type. A fair,
+  re-run comparison without competing load would be needed before
+  recommending Fast mode as a default for anyone prioritizing speed;
+  not done here to avoid re-running until a "nicer" number appears,
+  which would not be honest measurement.
+
+### 4. Quality differences
+
+- **current_data answers**: near-identical in content, tone, and
+  length for both models ("The current power of AC01 is 32.35 kW."
+  vs "...30.99 kW." - the numeric difference is live-data drift
+  between the two query times, not a model quality difference).
+- **root_cause**: not a clean comparison, since Fast's attempt never
+  produced LLM phrasing at all (timeout -> deterministic fallback).
+  Thorough's answer was coherent and correctly reflected that the
+  monitored tag was, AT THE MOMENT OF THIS QUERY, back within normal
+  range with no active alarm (the live simulator's earlier alarm
+  condition had cleared since this question was chosen as a
+  representative example) - a small positive grounding signal (the
+  model did not fabricate a continuing problem that no longer existed
+  in the live data), but means this specific example wasn't actually
+  "explaining an active alarm" by benchmark time.
+- **The known, accepted LLM grounding-fidelity limitation** (documented
+  elsewhere in this file/`CLAUDE.md` - fabricated specifics not present
+  in retrieved evidence) was not specifically re-tested against Fast
+  mode this phase; nothing here contradicts or confirms it for the
+  smaller model specifically.
+
+### 5. Grounding/fallback verified structurally unchanged, plus one real proof point
+
+`_render_interpretation_answer()`'s control flow (grounding check,
+violation handling, fallback construction) was not touched beyond
+adding the new `model=` field to each existing `AskResult(...)`
+construction - the branching logic itself is identical to before this
+phase. The Fast-mode root_cause timeout above is a genuine, real-world
+proof that the fallback path works correctly under an actual failure
+condition, not just a mocked one - `fallback_used` and the
+deterministic evidence text both behaved exactly as designed.
+
+### Tests
+
+17 new tests in `tests/test_ask_ai_mode_routing.py`, all passing:
+model-override routing through `ProviderFactory`/`AIProvider`/
+`AskEngine` (including that it's ignored for OpenAI and that an
+explicit injected client still wins outright), `set_model_override()`
+preserving `_pending`/`_history`/query-engine/database identity,
+`AskResult.model` field defaults/storage, instant-answer timing in
+both modes (with a documented note on why `result.provider`/`.model`
+being non-None is NOT itself proof an LLM call happened - see below),
+and fallback/grounding behavior being identical in both modes when no
+provider is available. Two of my own test-design mistakes were caught
+and fixed while writing these, both while running the actual routing
+code live rather than only against mocks:
+- An initial assertion expected `AskResult.provider`/`.model` to be
+  `None` for an instant-answer question - factually wrong; `app/ask.py`'s
+  `ask()`/`ask_structured()` "intent is None" branch populates both
+  from whatever the engine has CONFIGURED regardless of whether that
+  specific answer actually invoked it (pre-existing behavior, not
+  changed by this phase). Fixed to assert on elapsed time and the
+  known deterministic answer template instead.
+- An exact-text-equality assertion between two live "is everything ok"
+  calls failed because `plc_logger.service` keeps writing fresh
+  readings in the background the whole time tests run, so two
+  sequential live queries can legitimately differ in which tags are
+  currently flagged. Fixed to assert on the deterministic template
+  shape instead of exact text.
+
+Existing Ask AI test suites (`tests/test_phase15_ask_integration.py`,
+`tests/test_phase18_ask_ai_page.py`, `tests/test_phase18_ask_progress.py`,
+`tests/test_ask_ai_ux.py` - 57 tests) re-run and still pass unchanged.
+
+### Files changed
+
+Changed: `ai/providers/provider_factory.py` (additive `model_override`
+param), `ai/ai_provider.py` (passthrough param), `app/ask.py`
+(`AskEngine.model_override` param, new `set_model_override()` method,
+`AskResult.model` field + populated at every construction site),
+`ui/pages/1_Ask_AI.py` (mode selector, evidence expander shows model).
+New: `tests/test_ask_ai_mode_routing.py`. **No changes** to
+`ai/providers/base_provider.py`, `ai/providers/ollama_provider.py`,
+`ai/providers/openai_provider.py`, `ai/grounding_guard.py`,
+`ai/prompt_builder.py`, or any deterministic engine.
+
+### Manual checks
+
+- Live `AppTest` interaction confirmed the mode radio actually
+  rebuilds the engine and the status caption reflects the new model
+  immediately (not just that the widget renders).
+- The three-question, both-mode live benchmark above IS the manual,
+  real-hardware verification this phase's own tests deliberately don't
+  automate (matching the established "don't make the suite depend on
+  live Ollama" convention).
+- Not done: a real browser click-through (same standing caveat as
+  every other UI phase this session); a clean, non-contended re-run of
+  the benchmark to isolate the CPU-contention confound noted above.
+
+### PHASE STATUS: PASS - feature complete and correct; Fast mode's real-world
+speed benefit is UNCONFIRMED by this benchmark and should not be assumed
+
+---

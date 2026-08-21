@@ -48,7 +48,11 @@ back to the plain deterministic text instead).
 
 - **Ask AI** - natural-language Q&A over live and historical factory
   data, with root-cause analysis, trend/threshold lookups, plant
-  comparisons, and manufacturer-documentation-grounded answers.
+  comparisons, and manufacturer-documentation-grounded answers. A
+  Fast/Thorough mode toggle (qwen2.5:3b / qwen2.5:7b) trades phrasing
+  depth for speed - the identical deterministic grounding/fallback
+  applies to both, and instant/deterministic answers are unaffected
+  either way.
 - **SCADA Floor Plan** - live, flicker-free visual plant map.
 - **Energy Dashboard** - demand, energy, cost, and utility-performance
   KPIs per plant, with a P01 vs P02 comparison.

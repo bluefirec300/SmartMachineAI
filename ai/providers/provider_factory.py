@@ -47,7 +47,20 @@ class ProviderFactory:
     def create(
         cls,
         provider_name: str | None = None,
+        model_override: str | None = None,
     ) -> BaseAIProvider:
+        """
+        model_override (Phase V2.4 - Ask AI Fast/Thorough mode): a
+        specific, session-chosen model that wins over everything else
+        below it - env var, settings.ini, and the built-in default -
+        for whichever provider ends up selected. Left None (the
+        default for every existing caller), routing is completely
+        unchanged from before this phase. Deliberately NOT a new
+        precedence tier documented as replacing env/settings/default -
+        it's an explicit, one-off override a caller opts into, the
+        same way passing an explicit client already bypasses provider
+        selection entirely in AIProvider.__init__.
+        """
         config = ConfigManager()
 
         selected_provider = (
@@ -63,7 +76,8 @@ class ProviderFactory:
             )
 
             model = (
-                cls._environment_value("OLLAMA_MODEL")
+                model_override
+                or cls._environment_value("OLLAMA_MODEL")
                 or config.ollama_model
                 or "qwen2.5:7b"
             )
@@ -88,6 +102,11 @@ class ProviderFactory:
             )
 
         if selected_provider == "openai":
+            # model_override is deliberately NOT applied here - Fast/
+            # Thorough mode names specific Ollama models (qwen2.5:3b/
+            # 7b), which would be meaningless passed to OpenAI. A
+            # caller on the openai provider gets its normal
+            # env/settings/default model regardless of mode.
             model = (
                 cls._environment_value("OPENAI_MODEL")
                 or config.ai_model

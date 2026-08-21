@@ -21,11 +21,13 @@ class AIProvider:
         self,
         provider_name: str | None = None,
         client: BaseAIProvider | None = None,
+        model_override: str | None = None,
     ):
         self.client = (
             client
             or ProviderFactory.create(
-                provider_name=provider_name
+                provider_name=provider_name,
+                model_override=model_override,
             )
         )
 

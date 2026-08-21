@@ -16,9 +16,11 @@ operators to query directly.
   real plant.
 - **Hardware:** 4-core/16GB Ubuntu VM, **no GPU**. Local Ollama inference
   is CPU-only and slow (~0.6-0.8 tokens/sec) - a "why" root-cause answer
-  takes ~5-10 minutes on `qwen2.5:7b`. Accepted deliberately for now; a
-  GPU/cloud-API upgrade is planned once the pipeline design is fully
-  validated, not before.
+  takes ~5-10 minutes on `qwen2.5:7b` (Thorough mode). Accepted
+  deliberately for now; a GPU/cloud-API upgrade is planned once the
+  pipeline design is fully validated, not before. Phase V2.4 added a
+  Fast mode (`qwen2.5:3b`) as a same-hardware mitigation in the
+  meantime - see "Ask AI Fast/Thorough mode" below for measured timings.
 - **End users:** the factory's engineering department (not general
   operators) - questions can be reasonably technical.
 - **NLP goal:** flexible, casual natural-language questions should
@@ -331,6 +333,54 @@ a soft recent-error scan.
   failure for those; the page's "What that means" column says so per
   service rather than implying a uniform per-tick heartbeat that
   doesn't actually exist.
+
+## Ask AI Fast/Thorough mode (`ui/pages/1_Ask_AI.py`, `app/ask.py`'s `AskEngine.set_model_override()`, `ai/providers/provider_factory.py`'s `model_override`)
+
+Phase V2.4. A session-scoped radio toggle - Fast (`qwen2.5:3b`) /
+Thorough (`qwen2.5:7b`, the pre-existing default, still what anyone
+who never touches the selector gets) - lets an engineer trade phrasing
+depth for speed on THIS hardware, without touching the deterministic/
+grounding architecture at all.
+
+- **Routing, not a new provider path.** `ProviderFactory.create()`
+  gained one new, purely additive parameter, `model_override` - wins
+  over env var/settings.ini/default for Ollama specifically, has zero
+  effect on OpenAI (Fast/Thorough names Ollama models; applying one to
+  OpenAI would be meaningless). Threaded through unchanged:
+  `AIProvider.__init__` -> `AskEngine.__init__`/`AskEngine.
+  set_model_override()`. No new provider class, no new generate()/
+  stream() path - `engine/alarm_notification_engine.py`-style "reuse
+  the existing abstraction" applied to `ai/providers/`.
+- **`set_model_override()`, not "build a new AskEngine".** Switching
+  mode mid-conversation rebuilds ONLY `self.ai_provider`/
+  `self.ai_error` - `self._pending` (an in-progress clarification
+  menu) and `self._history` (recent-question context for follow-up
+  rewriting) are untouched. Constructing a whole new `AskEngine` would
+  have silently reset both.
+- **Instant-answer paths are untouched, but `AskResult.provider`/
+  `.model` are NOT reliable proof of that.** Discovery/equipment_status/
+  chitchat/factory-wide-timeline questions still skip the LLM entirely
+  regardless of mode (confirmed by elapsed time in
+  `tests/test_ask_ai_mode_routing.py` - low single-digit seconds vs.
+  the minutes a real `.generate()` call takes) - but `app/ask.py`'s
+  `ask()`/`ask_structured()` "intent is None" branch populates
+  `provider`/`model` from whatever the engine has CONFIGURED,
+  regardless of whether that specific answer actually invoked it. This
+  is pre-existing behavior, not something this phase changed - a test
+  asserting `result.provider is None` for an instant answer would be
+  wrong; check timing and/or the deterministic answer template instead
+  (see that test file for exactly how).
+- **`AskResult` gained a `model` field** (alongside the pre-existing
+  `provider`) - every construction site in `_render_interpretation_
+  answer()`/`ask_structured()` sets it consistently, so the UI/audit
+  trail can show which specific model actually phrased a given answer,
+  not just which provider.
+- **Measured timings**: see this phase's `FACTORY_AI_DEVELOPMENT_
+  STATUS.md` entry for the real, live-measured numbers on this exact
+  4-core/no-GPU VM (representative instant/current_data/root_cause
+  questions, both modes) - don't estimate a speedup ratio without
+  checking there first, CPU contention from the other always-running
+  services measurably affects both modes' absolute timings run to run.
 
 ## Alarm Notifications (`app/notification_worker.py`, `engine/alarm_notification_engine.py`, `ai/notification_log.py`, `config/notification_settings_manager.py`, `ui/pages/23_Alarm_Notification_Settings.py`)
 

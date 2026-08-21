@@ -47,6 +47,10 @@ class AskResult:
     resolved_entities: list[dict[str, Any]] = field(default_factory=list)
     structured_context: dict[str, Any] | None = None
     provider: str | None = None
+    # Phase V2.4 - which Ollama model actually produced this answer
+    # (e.g. "qwen2.5:3b" in Fast mode, "qwen2.5:7b" in Thorough mode) -
+    # None whenever provider is also None (no AI phrasing happened at all).
+    model: str | None = None
     # "grounded" | "violation_detected" | "not_checked" | "not_applicable"
     grounding_status: str = "not_applicable"
     fallback_used: bool = False
@@ -722,6 +726,7 @@ class AskEngine:
         self,
         config_database_path: str | Path = CONFIG_DATABASE_PATH,
         machine_database_path: str | Path = MACHINE_DATABASE_PATH,
+        model_override: str | None = None,
     ) -> None:
         self.config_database_path = Path(config_database_path)
 
@@ -745,7 +750,7 @@ class AskEngine:
             database_path=machine_database_path,
         )
 
-        self.ai_provider, self.ai_error = self._load_ai_provider()
+        self.ai_provider, self.ai_error = self._load_ai_provider(model_override)
 
         # General pending-action state for the current conversation.
         # Today this only holds a "select one of these candidates"
@@ -774,11 +779,23 @@ class AskEngine:
         self._history: list[str] = []
 
     @staticmethod
-    def _load_ai_provider() -> tuple[AIProvider | None, str]:
+    def _load_ai_provider(model_override: str | None = None) -> tuple[AIProvider | None, str]:
         try:
-            return AIProvider(), ""
+            return AIProvider(model_override=model_override), ""
         except Exception as error:
             return None, str(error)
+
+    def set_model_override(self, model_override: str | None) -> None:
+        """
+        Phase V2.4 - Ask AI Fast/Thorough mode. Rebuilds ONLY
+        self.ai_provider/self.ai_error, in place - deliberately not
+        "just construct a new AskEngine", which would also silently
+        reset self._pending (an in-progress clarification menu) and
+        self._history (recent-question context for follow-up
+        rewriting). Switching modes mid-conversation should change
+        which model answers the NEXT question, nothing else.
+        """
+        self.ai_provider, self.ai_error = self._load_ai_provider(model_override)
 
     @staticmethod
     def _history_hours(intent: str) -> int:
@@ -1648,11 +1665,13 @@ class AskEngine:
                 resolved_entities=resolved_entities,
                 structured_context=context,
                 provider=None,
+                model=None,
                 grounding_status="not_applicable",
                 fallback_used=True,
             )
 
         provider_name = self.ai_provider.provider if self.ai_provider is not None else None
+        model_name = self.ai_provider.model if self.ai_provider is not None else None
 
         if self.ai_provider is None:
             return AskResult(
@@ -1661,6 +1680,7 @@ class AskEngine:
                 resolved_entities=resolved_entities,
                 structured_context=context,
                 provider=None,
+                model=None,
                 grounding_status="not_applicable",
                 fallback_used=True,
             )
@@ -1679,6 +1699,7 @@ class AskEngine:
                 resolved_entities=resolved_entities,
                 structured_context=context,
                 provider=provider_name,
+                model=model_name,
                 grounding_status="not_applicable",
                 fallback_used=True,
             )
@@ -1695,6 +1716,7 @@ class AskEngine:
                 resolved_entities=resolved_entities,
                 structured_context=context,
                 provider=provider_name,
+                model=model_name,
                 grounding_status="not_checked",
                 fallback_used=False,
             )
@@ -1709,6 +1731,7 @@ class AskEngine:
                 resolved_entities=resolved_entities,
                 structured_context=context,
                 provider=provider_name,
+                model=model_name,
                 grounding_status="violation_detected",
                 fallback_used=True,
             )
@@ -1719,6 +1742,7 @@ class AskEngine:
             resolved_entities=resolved_entities,
             structured_context=context,
             provider=provider_name,
+            model=model_name,
             grounding_status="grounded",
             fallback_used=False,
         )
@@ -1889,6 +1913,7 @@ class AskEngine:
                 resolved_entities=[],
                 structured_context=None,
                 provider=self.ai_provider.provider if self.ai_provider is not None else None,
+                model=self.ai_provider.model if self.ai_provider is not None else None,
                 grounding_status="not_applicable",
                 fallback_used=self.ai_provider is None,
             )

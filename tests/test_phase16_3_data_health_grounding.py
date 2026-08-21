@@ -116,6 +116,10 @@ class _FakeProvider:
     def __init__(self, text):
         self._text = text
         self.provider = "fake"
+        # Phase V2.4 - AskEngine._render_interpretation_answer() now
+        # also reads .model (alongside the pre-existing .provider) on
+        # every AI provider, real or fake, to populate AskResult.model.
+        self.model = "fake-model"
         self.calls = 0
 
     def generate(self, prompt):

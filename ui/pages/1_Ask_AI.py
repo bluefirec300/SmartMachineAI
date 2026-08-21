@@ -25,9 +25,52 @@ logger = logging.getLogger(__name__)
 
 st.title("💬 Ask AI")
 
+# Phase V2.4 - Fast/Thorough mode. Both use the exact same deterministic
+# grounding/fallback architecture (app/ask.py's _render_interpretation_answer())
+# and the exact same instant-answer paths (discovery/equipment_status/
+# chitchat/comparison never touch either model, per INSTANT_ANSWERS_SKIP_LLM) -
+# only which Ollama model phrases an LLM-requiring answer changes.
+FAST_MODEL = "qwen2.5:3b"
+THOROUGH_MODEL = "qwen2.5:7b"
+MODE_LABELS = {"fast": f"⚡ Fast ({FAST_MODEL})", "thorough": f"🔍 Thorough ({THOROUGH_MODEL})"}
+MODE_MODELS = {"fast": FAST_MODEL, "thorough": THOROUGH_MODEL}
+MODE_KEYS = list(MODE_LABELS)
+
+if "ask_mode" not in st.session_state:
+    # Thorough (the pre-existing qwen2.5:7b default) - so anyone who
+    # never touches this selector sees exactly the same behavior as
+    # before this phase.
+    st.session_state["ask_mode"] = "thorough"
+
+selected_mode = st.radio(
+    "Response mode",
+    MODE_KEYS,
+    format_func=lambda key: MODE_LABELS[key],
+    index=MODE_KEYS.index(st.session_state["ask_mode"]),
+    horizontal=True,
+    help=(
+        "Fast uses a smaller local model for quicker answers. Thorough (the original default) uses the "
+        "larger model this app was tuned with. Both apply the identical deterministic grounding/fallback - "
+        "only phrasing speed and style differ. Switching mode only affects the NEXT question you ask."
+    ),
+)
+
+if selected_mode != st.session_state["ask_mode"]:
+    st.session_state["ask_mode"] = selected_mode
+    if st.session_state.get("ask_engine") is not None:
+        st.session_state["ask_engine"].set_model_override(MODE_MODELS[selected_mode])
+    else:
+        try:
+            st.session_state["ask_engine"] = AskEngine(model_override=MODE_MODELS[selected_mode])
+            st.session_state["ask_engine_error"] = None
+        except Exception as error:
+            st.session_state["ask_engine"] = None
+            st.session_state["ask_engine_error"] = str(error)
+    st.rerun()
+
 if "ask_engine" not in st.session_state:
     try:
-        st.session_state["ask_engine"] = AskEngine()
+        st.session_state["ask_engine"] = AskEngine(model_override=MODE_MODELS[st.session_state["ask_mode"]])
         st.session_state["ask_engine_error"] = None
     except Exception as error:
         st.session_state["ask_engine"] = None
@@ -215,9 +258,13 @@ for message in st.session_state["ask_history"]:
 
         if evidence:
             with st.expander("View Evidence"):
+                provider_and_model = evidence["provider"] or "unavailable"
+                if evidence.get("model"):
+                    provider_and_model += f" ({evidence['model']})"
+
                 st.caption(
                     f"Intent: {evidence['intent'] or 'tag-level (existing pipeline)'} · "
-                    f"Provider: {evidence['provider'] or 'unavailable'} · "
+                    f"Provider: {provider_and_model} · "
                     f"Grounding: {evidence['grounding_status']} · "
                     f"Deterministic fallback used: {evidence['fallback_used']}"
                 )
@@ -294,6 +341,7 @@ if job is not None:
                 evidence = {
                     "intent": result.intent,
                     "provider": result.provider,
+                    "model": result.model,
                     "grounding_status": result.grounding_status,
                     "fallback_used": result.fallback_used,
                     "resolved_entities": result.resolved_entities,
