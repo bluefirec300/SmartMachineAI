@@ -5570,3 +5570,112 @@ only the user can make.
 plant hardware validation blocked on the real PLC information above)
 
 ---
+
+## Phase V1.5 — Minimal Reporting
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Add simple engineering-friendly CSV export to Event Records and the
+Energy Dashboard, exporting exactly the filtered/date-range data
+currently on screen - without building a full reporting system, and
+without changing any deterministic calculation or page logic.
+
+### 1. Shared export helper - new
+
+`ui/csv_export.py` - two tiny functions used by both pages:
+`dataframe_to_csv_bytes()` (`df.to_csv(index=False).encode("utf-8")`)
+and `export_filename()` (prefix + timestamp + `.csv`). No report
+formatting/aggregation logic lives here - each page still builds its
+own plain DataFrame from data it already has.
+
+### 2. Event Records - CSV export
+
+The existing row-building loop (already exactly the data shown in the
+table, with the current Severity/Equipment/Tag/Time-range filters
+already applied by `event_store.get_recent_events(**filter_kwargs)`)
+was extracted, unchanged, into a named function -
+`events_to_dataframe()` - so the on-screen table and the CSV export are
+now provably built from the same rows, not two parallel
+implementations that could drift. A "⬇️ Download CSV" button exports
+it directly. Columns: Time, Equipment, Tag, Severity, Condition, Value
+(already includes the unit, e.g. "112.3 psi"), Message.
+
+### 3. Energy Dashboard - CSV export
+
+Two exports, both built from KPI dicts the page had already computed
+via the existing `ui/energy_dashboard_data.py` functions - no new
+data-access or calculation calls:
+
+- **Main Energy CSV** (`build_main_energy_dataframe()`) - every Main
+  Energy KPI card (Energy/Cost for the selected period, Energy/Cost
+  This Month, Projected Month Cost, Estimated Demand Charge, Estimated
+  Maximum Demand, Billing-Month Peak So Far, Production/Non-production
+  Energy, Estimated Base Load, After-hours Energy, and any available
+  production-normalized metrics) reshaped into a flat Metric/Value/
+  Unit/Classification/Notes table, stamped with Plant, Period Start,
+  Period End, and Generated At on every row. An unavailable metric
+  exports as the literal text "Unavailable" (matching the on-screen
+  wording), never a blank cell or a silently-substituted zero.
+- **Equipment Power Breakdown CSV** (`build_equipment_power_breakdown_
+  dataframe()`) - the existing live power-snapshot table (Equipment,
+  Power (kW), Power Share (%)), stamped with Plant and Generated At.
+  Explicitly labeled in its button's help text as a current snapshot,
+  not tied to the selected date range - it never was, on screen either.
+
+**Deliberately out of scope for V1** (would need to be requested
+separately, to keep this "minimal" and not a full reporting system):
+per-tab Utility Performance detail (Compressed Air/Chilled Water/
+Pumps/Water Treatment) and the Plant Comparison table - both are
+already on-screen but weren't asked for, and each is a different
+data shape that would meaningfully grow this phase's scope.
+
+### 4. Testability - functions extracted, not new behavior
+
+Both `events_to_dataframe()` and the two Energy Dashboard `build_*`
+functions were factored out of code that was previously inline -
+identical logic, now independently callable/testable pure functions.
+This is the only page-structure change made; no computed value, filter
+behavior, or on-screen rendering changed.
+
+### Tests
+
+21 new tests, all passing:
+- `tests/test_event_records_csv_export.py` (10) - column names/order,
+  unit-inclusion in Value, missing-value handling, severity
+  upper-casing, timestamp preservation, empty-events edge case, row
+  count matches filtered events, the shared CSV-bytes/filename
+  helpers, and a live `AppTest` confirming the real page renders the
+  download button without exception.
+- `tests/test_energy_dashboard_csv_export.py` (11) - column
+  completeness (including units and timestamps), Plant/Period
+  stamping, available-vs-unavailable metric handling, billing-peak
+  None vs present (with occurred-at in Notes), production-normalized
+  inclusion, different-plant-code reflection, breakdown-table
+  stamping without mutating the original DataFrame, and a live
+  `AppTest` confirming the real page renders its download button.
+
+Full regression: **1433 passed, 4 failed** - the same 3 pre-existing,
+unrelated `test_equipment_knowledge.py` typo-correction failures
+carried since before this phase, plus one pre-existing timing flake in
+`test_phase17_2a_context_history.py` (compares two live calls'
+`as_of` wall-clock timestamps; fails only if they straddle a second
+boundary - reproduced as failing in the full run, confirmed passing in
+isolation immediately after). Neither is touched by or related to this
+phase's changes.
+
+### Files changed
+
+New: `ui/csv_export.py`, `tests/test_event_records_csv_export.py`,
+`tests/test_energy_dashboard_csv_export.py`. Changed:
+`ui/pages/5_Event_Records.py` (extracted `events_to_dataframe()` +
+download button), `ui/pages/15_Energy_Dashboard.py` (extracted
+`build_main_energy_dataframe()`/`build_equipment_power_breakdown_
+dataframe()` + two download buttons). **No changes** to any
+deterministic engine, `ui/energy_dashboard_data.py`, `ai/event_store.py`,
+or any filter/query behavior on either page.
+
+### PHASE STATUS: PASS
+
+---

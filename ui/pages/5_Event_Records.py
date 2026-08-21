@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ai.event_store import EventStore
 from ai.trend_analyzer import format_number
+from ui.csv_export import dataframe_to_csv_bytes, export_filename
 from ui.data_access import MACHINE_DATABASE_PATH, get_event_filter_options
 
 
@@ -78,27 +79,37 @@ if not events:
     st.info("No events match the current filters.")
     st.stop()
 
-rows = []
-for event in events:
-    value_text = ""
-    if event.get("value") is not None:
-        value_text = format_number(event["value"])
-        if event.get("unit"):
-            value_text += f" {event['unit']}"
 
-    rows.append(
-        {
-            "Time": event["event_time"],
-            "Equipment": event["equipment"],
-            "Tag": event["tag"],
-            "Severity": event["severity"].upper(),
-            "Condition": event["condition"],
-            "Value": value_text,
-            "Message": event.get("message") or "",
-        }
-    )
+def events_to_dataframe(events: list[dict]) -> pd.DataFrame:
+    """
+    Shared by the on-screen table and the CSV export (Phase V1.5) - both
+    show exactly the same rows for whatever filters are currently
+    applied, since they're built from this one function.
+    """
+    rows = []
+    for event in events:
+        value_text = ""
+        if event.get("value") is not None:
+            value_text = format_number(event["value"])
+            if event.get("unit"):
+                value_text += f" {event['unit']}"
 
-df = pd.DataFrame(rows)
+        rows.append(
+            {
+                "Time": event["event_time"],
+                "Equipment": event["equipment"],
+                "Tag": event["tag"],
+                "Severity": event["severity"].upper(),
+                "Condition": event["condition"],
+                "Value": value_text,
+                "Message": event.get("message") or "",
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+df = events_to_dataframe(events)
 
 # Explicit text color alongside background - Streamlit's dark theme
 # defaults to white table text, which is unreadable against these
@@ -113,5 +124,13 @@ def _highlight_severity(row: pd.Series) -> list[str]:
     color = severity_colors.get(row["Severity"], "")
     return [color] * len(row)
 
+
+st.download_button(
+    "⬇️ Download CSV",
+    data=dataframe_to_csv_bytes(df),
+    file_name=export_filename("event_records"),
+    mime="text/csv",
+    help="Exports exactly the rows shown below, with the current Severity/Equipment/Tag/Time range filters applied.",
+)
 
 st.dataframe(df.style.apply(_highlight_severity, axis=1), width="stretch", height=700)

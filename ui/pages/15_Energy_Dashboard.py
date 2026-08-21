@@ -4,6 +4,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -13,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config.environment import get_active_environment
 from ui import energy_dashboard_data as d
+from ui.csv_export import dataframe_to_csv_bytes, export_filename
 
 """
 Phase 7 - Energy Dashboard & Plant Comparison. Presentation layer only:
@@ -63,6 +65,82 @@ def kpi_card(column, label: str, result: dict, formatter=_format_number, **forma
     with column:
         text = "Unavailable" if result["classification"] == "UNAVAILABLE" else formatter(result, **formatter_kwargs)
         st.metric(label, text, help=_help_text(result))
+
+
+def _result_row(label: str, result: dict, notes: str = "") -> dict:
+    if result["classification"] == "UNAVAILABLE" or result.get("value") is None:
+        return {"Metric": label, "Value": "Unavailable", "Unit": "", "Classification": result["classification"], "Notes": notes}
+    return {
+        "Metric": label,
+        "Value": result["value"],
+        "Unit": result.get("unit") or "",
+        "Classification": result["classification"],
+        "Notes": notes,
+    }
+
+
+def build_main_energy_dataframe(
+    plant_code: str,
+    period_start: datetime,
+    period_end: datetime,
+    period_kpis: dict,
+    month_kpis: dict,
+    billing_peak: dict | None,
+    normalized_cards: list[tuple[str, dict]],
+) -> pd.DataFrame:
+    """
+    The same Main Energy numbers shown as KPI cards above, reshaped
+    into a flat Metric/Value/Unit table for CSV export (Phase V1.5).
+    Pure function of already-computed results - calls no data-access
+    function itself, so it can't drift from what's on screen.
+    """
+    rows = [
+        _result_row("Energy (selected period)", period_kpis["energy"]),
+        _result_row("Cost (selected period)", period_kpis["cost"]),
+        _result_row("Energy This Month", month_kpis["energy_month"]),
+        _result_row("Cost This Month", month_kpis["cost_month"]),
+        _result_row("Projected Month Cost", month_kpis["projected_month_cost"]),
+        _result_row("Estimated Demand Charge", period_kpis["estimated_demand_charge"]),
+        _result_row("Estimated Maximum Demand - Selected Period", period_kpis["estimated_maximum_demand"]),
+    ]
+    if billing_peak is None:
+        rows.append(
+            {"Metric": "Billing-Month Peak So Far", "Value": "Unavailable", "Unit": "", "Classification": "UNAVAILABLE", "Notes": ""}
+        )
+    else:
+        rows.append(
+            {
+                "Metric": "Billing-Month Peak So Far",
+                "Value": billing_peak["max_demand_kw"],
+                "Unit": "kW",
+                "Classification": "RECORDED",
+                "Notes": f"Recorded {billing_peak['occurred_at']}",
+            }
+        )
+    rows += [
+        _result_row("Production Energy", period_kpis["production_energy_kwh"]),
+        _result_row("Non-production Energy", period_kpis["non_production_energy_kwh"]),
+        _result_row("Average Production-Period Demand", period_kpis["average_production_period_demand_kw"]),
+        _result_row("Estimated Base Load", period_kpis["estimated_base_load"]),
+        _result_row("After-hours Energy", period_kpis["after_hours"]),
+    ]
+    for normalized_label, normalized_result in normalized_cards:
+        rows.append(_result_row(normalized_label, normalized_result))
+
+    df = pd.DataFrame(rows)
+    df.insert(0, "Plant", plant_code.upper())
+    df.insert(1, "Period Start", period_start.strftime("%Y-%m-%d %H:%M:%S"))
+    df.insert(2, "Period End", period_end.strftime("%Y-%m-%d %H:%M:%S"))
+    df["Generated At"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return df
+
+
+def build_equipment_power_breakdown_dataframe(plant_code: str, breakdown_df: pd.DataFrame) -> pd.DataFrame:
+    """The on-screen equipment power breakdown table, reshaped for CSV export (Phase V1.5)."""
+    df = breakdown_df.copy()
+    df.insert(0, "Plant", plant_code.upper())
+    df["Generated At"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return df
 
 
 def _data_and_assumptions_expander(title: str, results: dict[str, dict]) -> None:
@@ -216,7 +294,7 @@ if normalized_cards:
     st.markdown("**Production-normalized (units actually produced this period only)**")
     cols = st.columns(len(normalized_cards))
     for col, (label, result) in zip(cols, normalized_cards):
-        kpi_card(col, label, result, decimals=4)
+        kpi_card(col, label, result, decimals=2)
 else:
     st.caption("No completed production batches in the selected period - production-normalized metrics unavailable.")
 
@@ -245,14 +323,36 @@ else:
 st.markdown("**Equipment power breakdown (current snapshot - Power Share, not accumulated energy)**")
 breakdown = d.get_equipment_power_breakdown(plant_code)
 if breakdown:
-    import pandas as pd
-    df = pd.DataFrame(breakdown)[["label", "power_kw", "power_share_pct"]]
-    df.columns = ["Equipment", "Power (kW)", "Power Share (%)"]
-    st.dataframe(df, hide_index=True, width="stretch")
+    breakdown_df = pd.DataFrame(breakdown)[["label", "power_kw", "power_share_pct"]]
+    breakdown_df.columns = ["Equipment", "Power (kW)", "Power Share (%)"]
+    st.dataframe(breakdown_df, hide_index=True, width="stretch")
+
+    export_df = build_equipment_power_breakdown_dataframe(plant_code, breakdown_df)
+    st.download_button(
+        "⬇️ Download Equipment Power Breakdown CSV",
+        data=dataframe_to_csv_bytes(export_df),
+        file_name=export_filename(f"equipment_power_breakdown_{plant_code}"),
+        mime="text/csv",
+        help="Exports the live power snapshot above - this is a current reading, not tied to the selected date range.",
+        key="download_equipment_power_breakdown_csv",
+    )
 else:
     st.caption("No live power readings available for a breakdown right now.")
 
 _data_and_assumptions_expander("Main Energy", {**period_kpis, **month_kpis, **{"production_intensity_" + k2: v2 for k2, v2 in intensity.items()}})
+
+# --- CSV export - Main Energy summary for the currently selected plant/period ---
+main_energy_df = build_main_energy_dataframe(
+    plant_code, period_start, period_end, period_kpis, month_kpis, billing_peak, normalized_cards
+)
+
+st.download_button(
+    "⬇️ Download Main Energy CSV",
+    data=dataframe_to_csv_bytes(main_energy_df),
+    file_name=export_filename(f"energy_dashboard_{plant_code}"),
+    mime="text/csv",
+    help="Exports the Main Energy summary above for the currently selected plant and date range.",
+)
 
 st.divider()
 
@@ -269,7 +369,7 @@ with tab_air:
     cols = st.columns(3)
     kpi_card(cols[0], "Total Compressor Energy", air["total_compressor_energy"])
     kpi_card(cols[1], "Header Air Volume", air["header_air_volume"])
-    kpi_card(cols[2], "Header Specific Energy", air["header_specific_energy"], decimals=4)
+    kpi_card(cols[2], "Header Specific Energy", air["header_specific_energy"], decimals=2)
 
     cols2 = st.columns(2)
     kpi_card(cols2[0], "Cost/Nm3 (header-level)", air["cost_per_nm3"], formatter=_format_cost)
@@ -312,7 +412,7 @@ with tab_pumps:
         kpi_card(cols[1], "Flow", result["flow_m3h"])
         kpi_card(cols[2], "ΔP", result["delta_p_bar"], decimals=3)
         kpi_card(cols[3], "Flow/kW", result["flow_per_kw"], decimals=3)
-        kpi_card(cols[4], "kWh/m3 (period)", pump_energy.get(instance, {"classification": "UNAVAILABLE", "missing_inputs": ["not computed"]}), decimals=4)
+        kpi_card(cols[4], "kWh/m3 (period)", pump_energy.get(instance, {"classification": "UNAVAILABLE", "missing_inputs": ["not computed"]}), decimals=2)
         kpi_card(cols[5], "Hydraulic Efficiency", result["efficiency_pct"])
     st.caption(
         "Hydraulic efficiency values are shown as calculated, including where they read unrealistically low - "
@@ -328,8 +428,8 @@ with tab_pumps:
 with tab_water:
     water = d.get_water_treatment_kpis(plant_code, period_start, period_end, now)
     cols = st.columns(2)
-    kpi_card(cols[0], "RO/DI (RO01) kWh/m3", water["RO01"], decimals=3)
-    kpi_card(cols[1], "Water Treatment (SYS01) kWh/m3", water["SYS01"], decimals=3)
+    kpi_card(cols[0], "RO/DI (RO01) kWh/m3", water["RO01"], decimals=2)
+    kpi_card(cols[1], "Water Treatment (SYS01) kWh/m3", water["SYS01"], decimals=2)
     _data_and_assumptions_expander("Water Treatment", water)
 
 st.divider()
