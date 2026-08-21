@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config.environment import get_active_environment
 from config.user_manager import DEFAULT_DATABASE_PATH, UserManager
 
 SESSION_KEY = "auth_user"
@@ -135,6 +136,17 @@ def render_sidebar_identity() -> None:
     """
     "Logged in as X (Role)" + a Logout button - shown once per page
     load in the sidebar, so it's visible no matter which page is open.
+
+    Also carries a persistent environment badge (Phase V1.4). Before
+    this, only the PLC Connectivity, Equipment & Tag Configuration,
+    Energy Dashboard, and Production Context pages showed which
+    environment (simulation vs. actual/real PLC) was active - every
+    other page (Live Data, Ask AI, Event Records, etc.) gave no visual
+    cue at all. Once a real PLC is connected, that's exactly the kind
+    of silent ambiguity that risks an engineer mistaking real data for
+    demo data or vice versa - this closes that gap in the one place
+    already proven to render on every page, rather than touching each
+    page individually.
     """
     user = current_user()
 
@@ -149,6 +161,13 @@ def render_sidebar_identity() -> None:
         if st.button("Log out", key="sidebar_logout_button"):
             logout()
             st.rerun()
+
+        st.divider()
+
+        if get_active_environment() == "actual":
+            st.error("🔴 **ACTUAL** environment\n\nReal PLC data.")
+        else:
+            st.caption("🟢 Simulation environment (demo/test data)")
 
 
 def require_role(*roles: str) -> None:

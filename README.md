@@ -139,3 +139,6 @@ each phase's schema.
   configure (area/system taxonomy, tariff, engineering thresholds,
   real PLC connection, user accounts) before treating a deployment as
   production-ready.
+- `docs/REAL_PLC_CUTOVER_PROCEDURE.md` - the step-by-step, safety-first
+  procedure for connecting the very first real PLC/equipment, from
+  connection details needed through testing loss/recovery behaviour.

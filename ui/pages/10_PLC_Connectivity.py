@@ -81,9 +81,11 @@ with env_col:
 with info_col:
     st.caption(
         "**Simulation** - the demo/presentation dataset (this one), safe to keep "
-        "forever. **Actual** - a separate, genuinely empty database for a real "
-        "deployment: no pre-built tags/equipment, configure them from scratch on "
-        "the Equipment & Tag Configuration page, then map real PLC addresses below."
+        "forever. **Actual** - a separate database for a real deployment, intended "
+        "to start empty: no pre-built tags/equipment ship with it, configure them "
+        "from scratch on the Equipment & Tag Configuration page, then map real PLC "
+        "addresses below. If earlier development testing has left placeholder data "
+        "here, clear it before going live - see `docs/REAL_PLC_CUTOVER_PROCEDURE.md`."
     )
 
 if selected_environment != stored_environment:

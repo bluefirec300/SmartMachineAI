@@ -5404,3 +5404,169 @@ deterministic engine, Ask AI, database schema beyond the two additive
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V1.4 — Real PLC Connection & Cutover
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Prove SmartFactoryAI can operate correctly with real PLC data, without
+redesigning any driver that already works, and stop to ask for real
+PLC connection details rather than guessing them.
+
+### 1. Architecture review - confirmed already sound
+
+Read `plc/driver_factory.py`, `app/plc_logger.py`,
+`config/plc_connection_manager.py`, `plc/tag_registry.py`, all four
+protocol drivers (`plc/modbus_driver.py`, `plc/opcua_driver.py`,
+`plc/s7_driver.py`, `plc/fins_driver.py`), `plc/simulator_driver.py`,
+`plc/base_driver.py`, `ui/pages/10_PLC_Connectivity.py`, and the Data
+Health staleness engine. Findings:
+
+- **Environment separation already structurally sound.** Simulation
+  and Actual are different SQLite files with their own independent
+  `plc_connections` tables; the PLC Connectivity page's Connections
+  section only renders at all when the Actual environment is selected
+  (`ui/pages/10_PLC_Connectivity.py:340`), so a real protocol can never
+  be activated while still pointed at the Simulation database. Switching
+  environments requires a process restart (`config/environment.py`'s
+  own docstring), so no running process can silently flip which
+  database it writes to.
+- **Driver failure signaling already safe.** Every real driver's
+  `read_all()` catches per-tag exceptions and omits that tag rather
+  than crashing the poll loop; a fully-down connection surfaces via
+  `plc_logger.py`'s outer exception handling either way, and
+  `RECONNECT_INTERVAL_SECONDS = 30` forces a reconnect attempt every
+  30s regardless of failure signal (already documented in
+  `app/plc_logger.py`'s own comments, added after a real OPC UA
+  idle-timeout incident).
+- **Staleness is already honestly surfaced.** Data Health marks a
+  fixed-interval tag "Stale" once its logging interval is exceeded by
+  5x (or 300s with no configured interval) - it never silently keeps
+  showing an old value as current (`engine/data_health_engine.py:344-362`).
+
+None of this needed redesigning, per the explicit instruction.
+
+### 2. Real gap found and fixed: no environment indicator outside PLC Connectivity
+
+Every page except PLC Connectivity, Equipment & Tag Configuration,
+Energy Dashboard, and Production Context gave an engineer **zero
+visual cue** whether they were looking at Simulation or Actual data -
+Live Data, Ask AI, Event Records, Anomalies, etc. all rendered
+identically regardless of environment. Once real PLC data starts
+flowing, that is exactly the kind of silent-mixing risk the phase
+objective warns against - not a database-level mixing risk (already
+closed, see above), but a human one.
+
+Fixed by extending `ui/auth.py`'s `render_sidebar_identity()` - already
+the one function proven to render on every page (called once from
+`Home.py`, which every page navigation re-executes) - with a persistent
+sidebar badge: a quiet green "Simulation environment (demo/test data)"
+caption, or a prominent red "🔴 ACTUAL environment - Real PLC data."
+`st.error()` block. No new mechanism, no page-by-page changes.
+
+### 3. End-to-end pipeline validated live
+
+No real PLC hardware is available this session. Used the existing
+local OPC UA test simulator (`/home/test/opcua-web-simulator`,
+referenced in `CLAUDE.md`) as the closest available stand-in, exactly
+as intended for this kind of test:
+
+- Started the simulator's OPC UA server on port 4840 (it was not
+  running at the start of this session).
+- Temporarily set `config/active_environment.txt` to `actual` (a plain
+  marker file only read at process start - confirmed via
+  `config/environment.py`'s own docstring that this cannot affect the
+  already-running Simulation-environment `plc_logger`/`streamlit`
+  systemd services, which never restarted).
+- Ran `python -m app.plc_logger` manually in the foreground for 25
+  bounded seconds against the Actual environment's already-configured
+  connection (an OPC UA connection named "test opc", pointing at that
+  same local test simulator, left active from an earlier development
+  session) and its 3 already-mapped test tags.
+- Confirmed fresh rows landed in `database/actual/machine_data.db`'s
+  `plc_data` table with live timestamps matching the test window -
+  proving the full **driver_factory → OPC UA driver → tag_registry →
+  historian** path works correctly against a real (test) server using
+  entirely unmodified code.
+- Restored `config/active_environment.txt` to `simulation` immediately
+  afterward, and stopped the standalone OPC UA server process (left the
+  simulator's own control UI on port 8502 running, its normal/intended
+  state).
+
+**This validates the mechanism, not genuine plant hardware** - the UI/
+deterministic-engine/Ask AI legs of the path were not separately
+re-validated against this test data, since they operate identically
+regardless of source (already proven throughout every other phase
+against the Simulation environment on the same schema/code path).
+
+### 4. Existing stale test data found in the Actual environment - flagged, not touched
+
+`database/actual/` was not empty, contradicting `CLAUDE.md`'s "genuinely
+empty" description (now stale - flagged for correction). It already
+contained ~10,100 historian rows and 3 placeholder tags (`tes55`,
+`tes56`, `tes57`) from an earlier development test session against the
+same OPC UA test simulator on 2026-08-12, plus 2 old `config.db` backup
+files. This phase's own pipeline validation (item 3 above) added a
+further ~15 rows to the same table. None of this is real plant data,
+but none of it was deleted or altered beyond the validation reads/writes
+already described - clearing or keeping it is a decision for whoever
+runs the real cutover, documented as step 2 of the new procedure below.
+
+### 5. New: safe real-PLC-connection procedure
+
+`docs/REAL_PLC_CUTOVER_PROCEDURE.md` - a 10-step, safety-first
+procedure for connecting the first real PLC/equipment: what connection
+details to gather first, confirming the Actual environment, dealing
+with the existing stale test data, testing the connection before
+activating it, mapping one tag first, and verifying loss/recovery
+behaviour honestly before expanding further. Referenced from `README.md`.
+
+### Tests
+
+3 new tests, all passing (`tests/test_sidebar_environment_badge.py`) -
+the environment badge shows the quiet caption in Simulation, the
+prominent error in Actual, and renders nothing at all when logged out.
+Full regression: **1413 passed, 3 failed** (the same pre-existing,
+unrelated `test_equipment_knowledge.py` typo-correction failures
+carried since before this phase - not touched, out of scope).
+
+### Files changed
+
+New: `docs/REAL_PLC_CUTOVER_PROCEDURE.md`,
+`tests/test_sidebar_environment_badge.py`. Changed: `ui/auth.py`
+(sidebar environment badge), `README.md` (procedure doc pointer).
+**No changes** to any PLC driver, `driver_factory.py`,
+`plc_connection_manager.py`, `tag_registry.py`, historian schema, any
+deterministic engine, or Ask AI.
+
+### What still requires real, human-provided information
+
+Per the explicit instruction to stop rather than guess:
+
+1. **Protocol** - which of Modbus TCP / OPC UA / Siemens S7 / Omron
+   FINS the real PLC speaks.
+2. **Network reachability** - host/IP and port reachable from this VM
+   (same subnet/VLAN or routed, firewall allowing the protocol's
+   port) - an IT/network action, not something determinable from here.
+3. **Protocol-specific parameters** - Modbus unit/slave ID; OPC UA
+   endpoint URL plus whether it needs a username/password or trusted
+   client certificate; S7 rack/slot; FINS PLC node/PC node.
+4. **At least one real tag address** on that PLC, to map to a single
+   SmartFactoryAI tag for the first end-to-end test.
+5. **Which single piece of equipment to onboard first** - the
+   procedure above deliberately starts with one tag, not the whole
+   plant.
+6. **A decision on the existing stale test data** in
+   `database/actual/` (item 4 above) - clear it first, or proceed
+   knowing it's there.
+
+None of this can be guessed safely; all of it is either physical/
+network information only the site can provide, or a scope decision
+only the user can make.
+
+### PHASE STATUS: PASS (mechanism validated via test simulator; genuine
+plant hardware validation blocked on the real PLC information above)
+
+---
