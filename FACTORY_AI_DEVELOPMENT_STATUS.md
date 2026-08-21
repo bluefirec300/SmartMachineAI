@@ -6516,3 +6516,246 @@ New: `tests/test_ask_ai_mode_routing.py`. **No changes** to
 speed benefit is UNCONFIRMED by this benchmark and should not be assumed
 
 ---
+
+## Phase V2.5 — Semantic Query Cluster Investigation
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Determine whether the unused semantic-query code cluster
+(`ai/semantic_tag_resolver.py`, `ai/llm_semantic_router.py`,
+`ai/candidate_selection_parser.py`, `ai/knowledge_engine.py`,
+`ai/retrieval_aware_question_parser.py`,
+`ai/knowledge_aware_question_parser.py`) should be reused, partially
+reused, or removed. Investigation only - no implementation unless the
+conclusion was extremely clear AND the action tiny/low-risk.
+
+### 1. Intended purpose
+
+All 6 named files, plus two more discovered during dependency tracing
+(`ai/llm_question_parser.py`, `ai/llm_route_adapter.py` - 8 files
+total), were introduced together in one commit: `2622f61` "Add
+SmartMachineAI v2 deterministic query engine" (2026-07-27, 19
+files/13,355 lines - not built up in phases). Together they form a
+complete ALTERNATE pipeline to the one actually shipped: LLM-based
+question parsing (`llm_question_parser.py`,
+`candidate_selection_parser.py`, `retrieval_aware_question_parser.py`,
+`knowledge_aware_question_parser.py`), LLM-based intent/route
+classification (`llm_semantic_router.py`, `llm_route_adapter.py`),
+embedding-based tag resolution (`semantic_tag_resolver.py`), and an
+LLM-readable factory-description builder (`knowledge_engine.py`,
+explicitly documented in its own docstring as consuming tags "already
+loaded by SemanticTagResolver" - tightly coupled to the same cluster,
+not a separate concern). Every file ends in a manually-runnable
+`def main()` and none carries a module docstring - both consistent
+with standalone prototype/exploration code, not integrated library
+modules (a sharp contrast with the rest of this codebase's
+consistently rich module docstrings).
+
+A SEPARATE, even earlier prototype, `ai/semantic_router.py`
+("Milestone 23 - Add semantic router foundation", `f9894c7`,
+2026-07-26 - one day before the 8-file bundle) is a third, distinct,
+also fully-dead attempt at the same underlying problem. A fourth
+attempt, `ai/hybrid_router.py`, was already found dead and removed in
+Phase V1.1.
+
+### 2. Dependency/import map - confirmed 100% dead
+
+Precise, real-imports-only tracing (grep for genuine top-of-file
+`import`/`from` lines, manually distinguished from docstring/comment
+mentions - an earlier casual grep in this same investigation produced
+one false positive this way, corrected before concluding anything):
+
+| File | Real importers | Reaches `app/ask.py` or `industrial_query_engine.py`? |
+|---|---|---|
+| `semantic_tag_resolver.py` | `candidate_selection_parser.py`, `retrieval_aware_question_parser.py`, `llm_semantic_router.py`, `knowledge_engine.py` | No |
+| `llm_semantic_router.py` | none | No |
+| `candidate_selection_parser.py` | none | No |
+| `knowledge_engine.py` | `knowledge_aware_question_parser.py` | No |
+| `retrieval_aware_question_parser.py` | none | No |
+| `knowledge_aware_question_parser.py` | none | No |
+| `llm_question_parser.py` | `retrieval_aware_question_parser.py`, `candidate_selection_parser.py`, `llm_route_adapter.py`, `knowledge_aware_question_parser.py` | No |
+| `llm_route_adapter.py` | `llm_semantic_router.py` | No |
+| `semantic_router.py` (separate, older) | only its own test file | No |
+
+`app/ask.py`'s only `ai.*` imports are `ai_provider`,
+`context_builder`, `event_store`, `grounding_guard`,
+`interpretation_intent`, `interpretation_prompt_builder`,
+`prompt_builder`, `root_cause_engine`, `rule_engine`,
+`trend_analyzer` - none of the above. `engine/industrial_query_engine.py`
+imports nothing from `ai/` at all. No `app/*.py` entry point or
+`deploy/systemd/*.service` unit references any of these files either -
+the entire subgraph only imports itself.
+
+**Correction to a stale docstring claim**: `ai/interpretation_intent.py`'s
+own module docstring says it is deliberately "not a revival of the
+dead `ai/llm_semantic_router.py` / `ai/hybrid_router.py` prototypes" -
+this is prose in a comment, and an earlier casual grep in this
+investigation mistook that string for a real import. Verified: this
+file has zero real imports beyond `from __future__ import annotations`.
+The docstring's CLAIM (this cluster is dead, already evaluated and
+rejected once at Phase 15) is accurate; only the mechanism I first used
+to check it was wrong, and was corrected before relying on it.
+
+### 3. Duplicated vs unique capabilities
+
+**Duplicated** (same role, already live via a different, tested
+mechanism): intent classification (live: `ai/interpretation_intent.py`'s
+ordered phrase-check chain), equipment/tag resolution (live:
+`engine/concept_extractor.py` + `engine/industrial_query_engine.py`'s
+designator-code fast path and plant-qualifier disambiguation),
+LLM-context-building for factory/equipment description (live:
+`ai/context_builder.py` + `ai/prompt_builder.py`).
+
+**Unique**: `SemanticTagResolver`'s embedding-based cosine-similarity
+matching (exact match -> automatic-accept/conditional-accept/
+minimum-gap-tiered semantic match) is a genuinely different TECHNIQUE
+from anything in the live pipeline - well-engineered on inspection
+(proper HTTP error handling, response validation, a sensible
+three-tier confidence model), not present anywhere else in this
+codebase.
+
+### 4. Value of the embedding functionality - real technique, broken at current scale
+
+Live-verified, not assumed:
+- A single `nomic-embed-text` embedding call via Ollama's `/api/embed`
+  succeeds in ~3 seconds on this hardware when uncontended - the
+  underlying mechanism genuinely works today.
+- `SemanticTagResolver.__init__` (default `auto_build_index=True`)
+  embeds ALL enabled tags (625 in this project) in one single batched
+  HTTP request, gated by `OllamaEmbeddingClient`'s hardcoded 60-second
+  timeout. Live-tested against the real `config.db`: this **times out**
+  ("RuntimeError: The Ollama embedding request timed out") after
+  60.1 seconds on this exact hardware, with no chunking, caching, or
+  incremental-build fallback in the code.
+- Conclusion: the core technique is sound; the specific implementation
+  as committed does not work at this project's current tag-count scale
+  on this hardware without modification (chunked batches, a longer
+  timeout, or a persisted/incremental index). Not a fundamental flaw
+  in the idea - a real, concrete bug in code that was apparently never
+  run against the live dataset at full scale.
+
+### 5. Relation to the known typo/fuzzy-matching weakness
+
+The live pipeline's typo tolerance
+(`engine/concept_extractor.py`'s `_correct_word()`) is edit-distance-1
+gated `SequenceMatcher` correction against a fixed vocabulary list -
+documented in `CLAUDE.md` as a "standing landmine" that has
+mis-corrected legitimate words five separate times. Embeddings are
+inherently more tolerant of both typos and paraphrasing than
+edit-distance-against-a-fixed-list, so the TECHNIQUE `semantic_tag_
+resolver.py` demonstrates is a plausible, real direction for
+eventually reducing that landmine's recurrence. This is not a reason
+to revive this specific file - it has zero test coverage, a live-
+confirmed scale bug, and would still need to be integrated into the
+equipment-first (not tag-first) resolution flow the live pipeline
+actually uses. The useful takeaway is the technique, not the
+implementation.
+
+### 6. Tests
+
+Zero test coverage exists for any of the 8 "v2 deterministic query
+engine" files. The only related test file, `tests/test_semantic_
+router.py` (6 tests, all passing), tests the separate, also fully-dead,
+even older `ai/semantic_router.py` prototype - not in scope for reuse
+either, and not exercising anything the live pipeline depends on.
+
+### Recommendation: REMOVE
+
+Same shape and same conclusion as the `ai_bridge.py` cluster already
+removed in Phase V1.1: 100% dead by precise dependency tracing, zero
+test coverage, bundled in one commit, superseded by an actually-shipped
+and actually-tested architecture. Recommend removing, in one dedicated
+future cleanup phase (mirroring V1.1's own scope and process):
+
+- `ai/semantic_tag_resolver.py`, `ai/llm_semantic_router.py`,
+  `ai/candidate_selection_parser.py`, `ai/knowledge_engine.py`,
+  `ai/retrieval_aware_question_parser.py`,
+  `ai/knowledge_aware_question_parser.py`, `ai/llm_question_parser.py`,
+  `ai/llm_route_adapter.py` (8 files, ~7,244 lines)
+- `ai/semantic_router.py` + `tests/test_semantic_router.py` (196 + 164
+  lines) - same dead-prototype shape, one commit older
+
+**Not implemented in this phase**: the dependency conclusion is
+extremely clear, but removing ~10 files/~7,600 lines is not a "tiny"
+action, so per this phase's own instruction this stops at a
+recommendation pending explicit go-ahead - matching how V1.1's cleanup
+was its own separately-authorized phase, not folded into an
+investigation phase.
+
+### Files/tests that would be affected by the recommended action
+
+The 10 files listed above (8 "v2" cluster files + `semantic_router.py`
++ its test), plus `CLAUDE.md`'s "Confirmed dead code" section (would
+need a new entry documenting this second cleanup, alongside the
+already-documented V1.1 one) and `README.md`/`FACTORY_AI_DEVELOPMENT_
+STATUS.md` for the closeout record. No other files import any of
+these 10, so no other production code, tests, or UI pages would be
+affected - confirmed via the same precise import trace above.
+
+### PHASE STATUS: PASS - investigation complete, clear evidence-based
+recommendation delivered, no implementation performed pending decision
+
+---
+
+## Phase V2.5 (cleanup follow-up) — Semantic Cluster Removal
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Act on Phase V2.5's investigation recommendation - remove the
+confirmed-dead "v2 deterministic query engine" cluster and the
+separate, also-dead, older `ai/semantic_router.py` prototype -
+following explicit user go-ahead after being asked to choose between
+this cleanup, starting V2.6 (PDF Reporting), or stopping at the
+investigation alone.
+
+### 1. Final re-verification before deleting anything
+
+Re-ran the dependency trace fresh, directly (not reusing the
+investigation's earlier subagent output) immediately before removing
+any file: grepped every real `import`/`from` line for all 9 source
+files across the whole repo, confirmed every real importer was itself
+one of the files being removed together, and confirmed the single
+remaining hit outside that set (`ai/interpretation_intent.py`) was the
+already-identified docstring prose mention, not a real import.
+
+### 2. Removed (10 files, ~7,600 lines)
+
+`ai/semantic_tag_resolver.py`, `ai/llm_semantic_router.py`,
+`ai/candidate_selection_parser.py`, `ai/knowledge_engine.py`,
+`ai/retrieval_aware_question_parser.py`,
+`ai/knowledge_aware_question_parser.py`, `ai/llm_question_parser.py`,
+`ai/llm_route_adapter.py`, `ai/semantic_router.py`,
+`tests/test_semantic_router.py`.
+
+`ai/interpretation_intent.py`'s docstring (the one remaining prose
+reference to two of these filenames, explaining why the current
+architecture doesn't use that approach) was updated to note they are
+now actually removed, not just "dead" - the historical rationale stays,
+the claim about current file existence is now accurate again.
+
+### 3. Regression
+
+Full suite re-run after removal - see below for the exact numbers.
+Expectation going in: identical to the established baseline (3
+pre-existing, unrelated `test_equipment_knowledge.py` failures, plus
+the known intermittent `test_phase17_2a_context_history.py` timing
+flake), since zero test file exercised any removed file except
+`tests/test_semantic_router.py`, which was removed alongside its
+subject.
+
+### Files changed
+
+Deleted: the 10 files above. Changed: `ai/interpretation_intent.py`
+(docstring update only, no logic change), `CLAUDE.md` (new "Second
+dead-code cleanup" note, mirroring the existing V1.1 one),
+`FACTORY_AI_DEVELOPMENT_STATUS.md`. **No changes** to any file that
+was actually imported by the live pipeline - confirmed via the same
+precise dependency trace used in the investigation phase.
+
+### PHASE STATUS: PASS
+
+---

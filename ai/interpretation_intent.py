@@ -6,7 +6,10 @@ Phase 15 - domain-intent classification for the AI Interpretation Layer.
 Deliberately the SAME architectural pattern engine/concept_extractor.py
 already uses for its own 10 intents (an ordered phrase-check chain, not
 ML/embeddings, not a revival of the dead ai/llm_semantic_router.py /
-ai/hybrid_router.py prototypes - see the Phase 15 audit).
+ai/hybrid_router.py prototypes - see the Phase 15 audit). Both of those,
+plus the rest of the "v2 deterministic query engine" cluster they were
+part of, were removed for real in Phase V2.5's cleanup follow-up after
+a fresh dependency trace confirmed zero live importers.
 
 INTENT ROUTING PRECEDENCE (the approved correction) - this module answers
 ONLY "is this a Phase 15 domain question, and if so which one", by phrase

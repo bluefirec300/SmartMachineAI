@@ -105,6 +105,25 @@ a normal tracked file (not uncommitted WIP). `app/machine_query.py`
 is the one item from that original list still present and still
 unimported - safe to ignore/delete whenever it's next touched.
 
+**Second dead-code cleanup - done (Phase V2.5's investigation +
+cleanup follow-up).** A separate, unrelated "v2 deterministic query
+engine" cluster (`ai/semantic_tag_resolver.py`, `ai/llm_semantic_
+router.py`, `ai/candidate_selection_parser.py`, `ai/knowledge_
+engine.py`, `ai/retrieval_aware_question_parser.py`, `ai/knowledge_
+aware_question_parser.py`, `ai/llm_question_parser.py`, `ai/llm_
+route_adapter.py` - all 8 landed in one commit, `2622f61`, never wired
+into `app/ask.py`/`engine/industrial_query_engine.py`) plus an even
+older, separately-dead prototype (`ai/semantic_router.py` + its test)
+were removed after a precise, real-imports-only dependency trace
+confirmed zero live importers. The one salvageable idea -
+`SemanticTagResolver`'s embedding-based tag matching via
+`nomic-embed-text` - was live-verified to work in principle (~3s per
+call) but to time out at this project's actual 625-tag scale with the
+committed code's 60s/no-chunking design; if embedding-based typo
+tolerance is revisited later, treat this as a lesson on the technique,
+not code to resurrect as-is. Full findings: `FACTORY_AI_DEVELOPMENT_
+STATUS.md`'s Phase V2.5 entries.
+
 ## Current data model
 
 Both P01 and P02 of the two-plant tag dataset are fully enabled
