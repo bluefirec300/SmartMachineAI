@@ -86,7 +86,7 @@ def format_notification_email(event: dict[str, Any]) -> tuple[str, str]:
     body_lines.append("")
     body_lines.append(
         "This is an automated notification from SmartFactoryAI. "
-        "Notification settings: config/settings.ini [NOTIFICATIONS] section."
+        "Manage recipients and notification settings on the Alarm Notification Settings page (admin)."
     )
 
     return subject, "\n".join(body_lines)

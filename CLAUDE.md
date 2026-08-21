@@ -332,12 +332,32 @@ a soft recent-error scan.
   service rather than implying a uniform per-tick heartbeat that
   doesn't actually exist.
 
-## Alarm Notifications (`app/notification_worker.py`, `engine/alarm_notification_engine.py`, `ai/notification_log.py`)
+## Alarm Notifications (`app/notification_worker.py`, `engine/alarm_notification_engine.py`, `ai/notification_log.py`, `config/notification_settings_manager.py`, `ui/pages/23_Alarm_Notification_Settings.py`)
 
-Phase V2.2. Off by default (`config/settings.ini`'s `[NOTIFICATIONS]`
-`enabled`, same "must be an explicit edit" principle as historian
-backup) - see `docs/ALARM_NOTIFICATIONS_SETUP.md` for full setup.
+Phase V2.2, admin UI added in Phase V2.3. Off by default (same "must
+be an explicit action" principle as historian backup) - see
+`docs/ALARM_NOTIFICATIONS_SETUP.md` for full setup.
 
+- **Enabled/min_severity/cooldown_minutes/recipients are admin-
+  editable, in `config.db`, not `settings.ini`.** Phase V2.3 moved
+  these four out of `config/settings.ini`'s `[NOTIFICATIONS]` section
+  and into `config.notification_settings_manager.NotificationSettingsManager`
+  (`notification_settings` + `notification_recipients` tables) -
+  exactly the same "so an admin page can change it live, with an audit
+  trail, instead of editing a text file" reasoning already established
+  for `plc_connections`. `app/notification_worker.py` reads this fresh
+  every cycle (default 30s), so changes from the admin page take
+  effect **without a restart** - unlike almost every other
+  admin-configurable setting in this app. The four settings.ini keys
+  are still present (schema-seed defaults / historical reference) but
+  are no longer read by the worker.
+- **SMTP host/port/TLS/from-address stay in `settings.ini`;
+  `SMTP_USERNAME`/`SMTP_PASSWORD` stay in environment variables.**
+  Neither is shown or editable on the new admin page, per its explicit
+  "keep credentials out of the UI" requirement -
+  `ui/pages/23_Alarm_Notification_Settings.py` never imports/reads
+  `os.getenv` or any `ConfigManager.smtp_*` property (enforced by a
+  source-level test, `tests/test_notification_settings_manager.py`).
 - **A wholly separate systemd service, on purpose.** Runs independent
   of `event_monitor.service` (which still does exactly what it always
   did - writes `machine_events` on a state transition, nothing more).

@@ -1,7 +1,8 @@
 # Alarm email notifications - setup
 
-Phase V2.2. Off by default. Enabling this is always an explicit,
-intentional set of edits - nothing here turns itself on.
+Phase V2.2, admin UI added in Phase V2.3. Off by default. Enabling
+this is always an explicit, intentional action - nothing here turns
+itself on.
 
 ## What this does
 
@@ -12,29 +13,34 @@ a configured recipient list when one qualifies. It never touches
 `event_monitor.service` or how alarms are detected/stored - it only
 reads what's already there.
 
-## 1. Non-secret settings - `config/settings.ini`
+## 1. Who receives alerts, and core behavior - the admin UI (recommended)
 
-```ini
-[NOTIFICATIONS]
-enabled = true
-min_severity = alarm
-cooldown_minutes = 60
-recipients = engineer1@example.com, engineer2@example.com
-smtp_host = smtp.example.com
-smtp_port = 587
-smtp_use_tls = true
-smtp_from_address = smartfactoryai@example.com
-poll_interval_seconds = 30
-```
+**Alarm Notification Settings** (admin-only page, sidebar) lets an
+admin manage this without editing any file:
+- Enable/disable the toggle.
+- Minimum severity to notify (`alarm` or `warning`).
+- Cooldown minutes between repeat notifications for the same alarm.
+- Add/remove recipient email addresses (validated, duplicate-checked).
 
-- `min_severity` - `alarm` (default) or `warning`. `warning` also
-  includes `alarm`.
-- `cooldown_minutes` - how long to wait before the SAME (equipment,
-  tag, condition) alarm is allowed to email again. Prevents a
-  `event_monitor.service` restart re-evaluating an already-active
-  alarm as "new" from spamming a fresh email every restart.
-- `recipients` - comma-separated. Empty means nowhere to send, so the
-  worker won't attempt to even if `enabled = true`.
+Every change is written to `config.db` (`notification_settings`/
+`notification_recipients` tables - the same "admin page changes it
+live, with an audit trail, instead of editing a text file" pattern
+already used for PLC connections) and picked up by
+`notification_worker.service` on its **next cycle, within
+~30 seconds - no restart needed.** Every add/remove/settings change is
+recorded in that page's own audit-log expander.
+
+This page never shows or asks for an SMTP server address, port, or
+any credential - see section 2 below for those.
+
+### Equivalent via settings.ini (legacy / scripting)
+
+`config/settings.ini`'s `[NOTIFICATIONS]` `enabled`/`min_severity`/
+`cooldown_minutes`/`recipients` keys are still present as the schema's
+initial-seed defaults, but **`app/notification_worker.py` no longer
+reads them** as of Phase V2.3 - use the admin UI (or
+`config.notification_settings_manager.NotificationSettingsManager`
+directly, e.g. from a setup script) instead.
 
 ## 2. Secrets - environment variables, never settings.ini
 
@@ -98,10 +104,10 @@ reason (auth, connection, timeout) instead of a crash.
 
 ## 5. Turning it off again
 
-Set `enabled = false` in `config/settings.ini`'s `[NOTIFICATIONS]`
-section (no restart required - the worker checks this every cycle),
-or `sudo systemctl stop notification_worker.service` to stop the
-process entirely.
+Flip the toggle off on the Alarm Notification Settings page (takes
+effect within ~30 seconds, no restart), or
+`sudo systemctl stop notification_worker.service` to stop the process
+entirely.
 
 ## What you'll see in an email
 
@@ -116,5 +122,5 @@ Value: 40.18 kW
 Timestamp: 2026-08-21 13:19:46
 Message: P01.UTILITY.AC03.Power_kW is critically high at 40.18 kW (high alarm limit: 35 kW).
 
-This is an automated notification from SmartFactoryAI. Notification settings: config/settings.ini [NOTIFICATIONS] section.
+This is an automated notification from SmartFactoryAI. Manage recipients and notification settings on the Alarm Notification Settings page (admin).
 ```

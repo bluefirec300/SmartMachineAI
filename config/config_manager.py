@@ -105,8 +105,14 @@ class ConfigManager:
         """
         Same "must never be silently switched on" reasoning as
         historian_backup_enabled above - fallback is deliberately
-        False. Enabling email alarm notifications is always an
-        explicit, intentional edit to settings.ini.
+        False.
+
+        Phase V2.3: app/notification_worker.py no longer reads this -
+        it reads config.notification_settings_manager.NotificationSettingsManager
+        (config.db) instead, so an admin can change it live from the
+        Alarm Notification Settings page. Kept here as the schema's
+        seed default and for anything that still wants the
+        settings.ini-configured value directly.
         """
         return self.config.getboolean(
             "NOTIFICATIONS", "enabled", fallback=False
@@ -114,18 +120,21 @@ class ConfigManager:
 
     @property
     def notification_min_severity(self) -> str:
+        """Superseded by NotificationSettingsManager as of Phase V2.3 - see notifications_enabled's docstring."""
         return self.config.get(
             "NOTIFICATIONS", "min_severity", fallback="alarm"
         ).strip().lower()
 
     @property
     def notification_cooldown_minutes(self) -> float:
+        """Superseded by NotificationSettingsManager as of Phase V2.3 - see notifications_enabled's docstring."""
         return self.config.getfloat(
             "NOTIFICATIONS", "cooldown_minutes", fallback=60.0
         )
 
     @property
     def notification_recipients(self) -> list[str]:
+        """Superseded by NotificationSettingsManager as of Phase V2.3 - see notifications_enabled's docstring."""
         raw = self.config.get("NOTIFICATIONS", "recipients", fallback="")
         return [address.strip() for address in raw.split(",") if address.strip()]
 

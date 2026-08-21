@@ -15,7 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from ai.event_store import EventStore
 from ai.notification_log import NotificationLog
 from config.config_manager import ConfigManager
-from config.environment import get_machine_db_path
+from config.environment import get_config_db_path, get_machine_db_path
+from config.notification_settings_manager import NotificationSettingsManager
 from engine.alarm_notification_engine import (
     format_notification_email,
     select_notifiable_events,
@@ -35,6 +36,14 @@ Polls for new machine_events rows via EventStore.get_events_since_id()
 every other worker's polling loop - see CLAUDE.md's Background
 services section) rather than adding any new hook into
 app/event_monitor.py's insert path.
+
+Phase V2.3 - enabled/min_severity/cooldown_minutes/recipients now come
+from NotificationSettingsManager (config.db, admin-editable via
+ui/pages/23_Alarm_Notification_Settings.py), read fresh every cycle -
+no restart needed for those to take effect. SMTP host/port/TLS/from-
+address stay in ConfigManager/settings.ini, and credentials stay in
+SMTP_USERNAME/SMTP_PASSWORD env vars - neither is touched by V2.3,
+per its explicit "keep credentials out of the UI" requirement.
 """
 
 TICK_INTERVAL_SECONDS_FALLBACK = 30.0  # overridden by config.notification_poll_interval_seconds
@@ -77,12 +86,15 @@ def run_cycle(
     event_store: EventStore,
     notification_log: NotificationLog,
     config: ConfigManager,
+    settings_manager: NotificationSettingsManager,
     marker_path: Path = CURSOR_MARKER_PATH,
     now: datetime | None = None,
 ) -> dict[str, int | str]:
     now = now or datetime.now()
 
-    if not config.notifications_enabled:
+    settings = settings_manager.get_settings()
+
+    if not settings["enabled"]:
         return {"skipped": "disabled"}
 
     since_id = _read_cursor(marker_path)
@@ -91,11 +103,11 @@ def run_cycle(
     if not events:
         return {"checked": 0}
 
-    notifiable = select_notifiable_events(events, config.notification_min_severity)
+    notifiable = select_notifiable_events(events, settings["min_severity"])
 
     smtp_username = os.getenv("SMTP_USERNAME")
     smtp_password = os.getenv("SMTP_PASSWORD")
-    recipients = config.notification_recipients
+    recipients = [r["email"] for r in settings_manager.list_recipients()]
 
     sent = 0
     skipped_cooldown = 0
@@ -111,7 +123,7 @@ def run_cycle(
 
         last_notified_at = notification_log.get_last_notified_at(equipment, tag, condition)
 
-        if not should_notify(now, last_notified_at, config.notification_cooldown_minutes):
+        if not should_notify(now, last_notified_at, settings["cooldown_minutes"]):
             skipped_cooldown += 1
             continue
 
@@ -164,20 +176,23 @@ def run_cycle(
     }
 
 
-def run_forever(machine_database_path, tick_interval: float | None = None) -> None:
+def run_forever(machine_database_path, config_database_path, tick_interval: float | None = None) -> None:
     config = ConfigManager()
     event_store = EventStore(database_path=machine_database_path)
     notification_log = NotificationLog(database_path=machine_database_path)
+    settings_manager = NotificationSettingsManager(database_path=config_database_path)
     interval = tick_interval or config.notification_poll_interval_seconds or TICK_INTERVAL_SECONDS_FALLBACK
 
     print(
-        f"Notification worker started. Machine DB: {machine_database_path}. "
-        f"Enabled: {config.notifications_enabled}. Tick interval: {interval:g}s."
+        f"Notification worker started. Machine DB: {machine_database_path}. Config DB: {config_database_path}. "
+        f"Enabled: {settings_manager.get_settings()['enabled']}. Tick interval: {interval:g}s. "
+        "Enabled/severity/cooldown/recipients are read fresh from config.db every cycle - "
+        "admin changes via the Alarm Notification Settings page apply without a restart."
     )
 
     while True:
         try:
-            summary = run_cycle(event_store, notification_log, config)
+            summary = run_cycle(event_store, notification_log, config, settings_manager)
             if summary.get("sent") or summary.get("failed"):
                 print(f"cycle: {summary}")
         except Exception as error:
@@ -190,7 +205,7 @@ def main() -> None:
     lock_file = _acquire_single_instance_lock()
 
     try:
-        run_forever(get_machine_db_path())
+        run_forever(get_machine_db_path(), get_config_db_path())
     except KeyboardInterrupt:
         print("\nNotification worker stopped.")
     finally:

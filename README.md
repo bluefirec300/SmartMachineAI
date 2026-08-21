@@ -64,7 +64,9 @@ back to the plain deterministic text instead).
   correctly, with no terminal access required.
 - **Alarm Notifications** - optional email alerts for alarms (off by
   default), with cooldown-based duplicate protection so a continuing
-  alarm doesn't spam - see `docs/ALARM_NOTIFICATIONS_SETUP.md`.
+  alarm doesn't spam, and an admin-only page (recipients, enable/
+  disable, severity/cooldown - no SMTP credentials) that applies
+  without a restart - see `docs/ALARM_NOTIFICATIONS_SETUP.md`.
 - **Service & Maintenance, Setpoints, Documentation, Factory/Equipment/
   Tag Configuration, User Management, PLC Connectivity** - the
   day-to-day admin and engineering surface.

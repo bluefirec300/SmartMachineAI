@@ -11,6 +11,7 @@ from ai.event_store import EventStore
 from ai.notification_log import NotificationLog
 from app import notification_worker
 from config.config_manager import ConfigManager
+from config.notification_settings_manager import NotificationSettingsManager
 from engine.alarm_notification_engine import (
     format_notification_email,
     select_notifiable_events,
@@ -276,24 +277,56 @@ class NotificationConfigTests(unittest.TestCase):
 
 
 class RunCycleTests(unittest.TestCase):
+    """
+    Phase V2.3 - enabled/min_severity/cooldown_minutes/recipients now
+    come from a real NotificationSettingsManager against a temp
+    config.db (not a mock) - these tests exercise the real
+    validation/persistence path the admin Settings page also uses,
+    not just a stand-in. Only smtp_host/port/tls/from_address remain
+    on a mocked ConfigManager, since V2.3 explicitly never touches
+    those.
+    """
+
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
         self.store = EventStore(database_path=self.tmpdir / "machine_data.db")
         self.log = NotificationLog(database_path=self.tmpdir / "machine_data.db")
+
+        # audit_log is created by a different migrator in the real app
+        # (database/initialize_config_db.py) - NotificationSettingsManager
+        # itself only owns its own two tables, so seed the minimal table
+        # it writes audit entries to, same precedent as
+        # tests/test_user_manager_lockout.py's LockoutTestBase.
+        config_db_path = self.tmpdir / "config.db"
+        connection = sqlite3.connect(config_db_path)
+        connection.execute(
+            """CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, username TEXT, action TEXT,
+                entity_type TEXT, entity_name TEXT, old_value TEXT, new_value TEXT, details TEXT
+            )"""
+        )
+        connection.commit()
+        connection.close()
+
+        self.settings_manager = NotificationSettingsManager(database_path=config_db_path)
         self.marker_path = self.tmpdir / "cursor.txt"
 
-    def _config(self, enabled=True, min_severity="alarm", cooldown_minutes=60.0):
+    def _config(self):
         config = mock.Mock()
-        config.notifications_enabled = enabled
-        config.notification_min_severity = min_severity
-        config.notification_cooldown_minutes = cooldown_minutes
-        config.notification_recipients = ["engineer@example.com"]
         config.smtp_host = "smtp.example.com"
         config.smtp_port = 587
         config.smtp_use_tls = True
         config.smtp_from_address = "alerts@example.com"
         return config
+
+    def _settings(self, enabled=True, min_severity="alarm", cooldown_minutes=60.0, recipients=("engineer@example.com",)):
+        self.settings_manager.update_settings(enabled, min_severity, cooldown_minutes, changed_by="tester")
+        for existing in self.settings_manager.list_recipients():
+            self.settings_manager.remove_recipient(existing["id"], changed_by="tester")
+        for email in recipients:
+            self.settings_manager.add_recipient(email, created_by="tester")
+        return self.settings_manager
 
     def _insert_alarm(self, tag="Tag1", condition="high_alarm", severity="alarm", event_time=None):
         # A distinct event_time per call by default - machine_events'
@@ -319,19 +352,22 @@ class RunCycleTests(unittest.TestCase):
 
     def test_disabled_config_does_nothing(self):
         self._insert_alarm()
+        settings = self._settings(enabled=False)
         with mock.patch("app.notification_worker.send_email") as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(enabled=False), self.marker_path)
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path)
         send.assert_not_called()
         self.assertEqual(summary, {"skipped": "disabled"})
 
     def test_no_new_events_reports_zero_checked(self):
-        summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path)
+        settings = self._settings()
+        summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path)
         self.assertEqual(summary["checked"], 0)
 
     def test_qualifying_alarm_sends_and_advances_cursor(self):
         self._insert_alarm()
+        settings = self._settings()
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)) as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 5))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 5))
 
         send.assert_called_once()
         self.assertEqual(summary["sent"], 1)
@@ -339,35 +375,38 @@ class RunCycleTests(unittest.TestCase):
 
     def test_second_cycle_within_cooldown_does_not_resend(self):
         self._insert_alarm(tag="Tag1")
+        settings = self._settings()
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)):
-            notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 5))
+            notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 5))
 
         # Same (equipment, tag, condition) alarm re-inserted, as a
         # restart of event_monitor.py re-evaluating an already-active
         # alarm would do.
         self._insert_alarm(tag="Tag1")
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)) as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 10))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 10))
 
         send.assert_not_called()
         self.assertEqual(summary["skipped_cooldown"], 1)
 
     def test_after_cooldown_expires_it_notifies_again(self):
         self._insert_alarm(tag="Tag1")
+        settings = self._settings(cooldown_minutes=60)
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)):
-            notification_worker.run_cycle(self.store, self.log, self._config(cooldown_minutes=60), self.marker_path, now=datetime(2026, 8, 21, 13, 0))
+            notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 0))
 
         self._insert_alarm(tag="Tag1")
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)) as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(cooldown_minutes=60), self.marker_path, now=datetime(2026, 8, 21, 14, 5))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 14, 5))
 
         send.assert_called_once()
         self.assertEqual(summary["sent"], 1)
 
     def test_warning_is_skipped_when_min_severity_is_alarm(self):
         self._insert_alarm(severity="warning", condition="high_warning")
+        settings = self._settings(min_severity="alarm")
         with mock.patch("app.notification_worker.send_email") as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(min_severity="alarm"), self.marker_path)
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path)
 
         send.assert_not_called()
         self.assertEqual(summary["notifiable"], 0)
@@ -376,8 +415,9 @@ class RunCycleTests(unittest.TestCase):
 
     def test_send_failure_rolls_cursor_back_for_retry(self):
         self._insert_alarm(tag="Tag1")
+        settings = self._settings()
         with mock.patch("app.notification_worker.send_email", return_value=(False, "connection refused")):
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 0))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 0))
 
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(summary["sent"], 0)
@@ -386,21 +426,35 @@ class RunCycleTests(unittest.TestCase):
 
     def test_failed_send_is_retried_and_succeeds_next_cycle(self):
         self._insert_alarm(tag="Tag1")
+        settings = self._settings()
         with mock.patch("app.notification_worker.send_email", return_value=(False, "connection refused")):
-            notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 0))
+            notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 0))
 
         with mock.patch("app.notification_worker.send_email", return_value=(True, None)) as send:
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 1))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 1))
 
         send.assert_called_once()
         self.assertEqual(summary["sent"], 1)
 
     def test_send_email_raising_is_treated_as_a_failure_not_a_crash(self):
         self._insert_alarm(tag="Tag1")
+        settings = self._settings()
         with mock.patch("app.notification_worker.send_email", side_effect=RuntimeError("boom")):
-            summary = notification_worker.run_cycle(self.store, self.log, self._config(), self.marker_path, now=datetime(2026, 8, 21, 13, 0))
+            summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 0))
 
         self.assertEqual(summary["failed"], 1)
+
+    def test_no_recipients_configured_is_not_notifiable_as_a_send_failure(self):
+        # An admin enabling notifications before adding any recipient
+        # should not crash or silently report success - send_email()
+        # itself already returns a clear (False, "no recipients
+        # configured") for this, exercised for real here (not mocked).
+        self._insert_alarm(tag="Tag1")
+        settings = self._settings(recipients=())
+        summary = notification_worker.run_cycle(self.store, self.log, self._config(), settings, self.marker_path, now=datetime(2026, 8, 21, 13, 0))
+
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["sent"], 0)
 
 
 class CursorMarkerTests(unittest.TestCase):

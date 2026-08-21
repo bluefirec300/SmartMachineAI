@@ -6191,3 +6191,142 @@ ALARM_NOTIFICATIONS_SETUP.md`.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.3 — Alarm Notification Settings UI
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Let an admin manage who receives alarm emails - enable/disable,
+minimum severity, cooldown, and the recipient list - without editing
+`config/settings.ini`, while keeping SMTP server credentials out of
+the UI entirely and reusing the exact V2.2 notification system rather
+than building a second one.
+
+### 1. Design decision - follow the PLC connections precedent exactly
+
+`config/plc_connection_manager.py` already established the pattern
+this phase needed: move admin-editable configuration out of
+`settings.ini` and into `config.db`, "so the admin page can change it
+live, with an audit trail, without editing a text file on the server."
+Applied the same reasoning to notification `enabled`/`min_severity`/
+`cooldown_minutes`/recipients specifically - NOT to `smtp_host`/
+`port`/`use_tls`/`from_address` (server configuration, no UI, per this
+phase's explicit requirement) or SMTP credentials (environment
+variables only, unchanged from V2.2).
+
+### 2. New: `config/notification_settings_manager.py`
+
+Self-initializing schema (`notification_settings` - single row,
+`notification_recipients` - many rows), mirroring
+`PLCConnectionManager`'s exact style: `_ensure_schema()`,
+audit-logged writes via a private `_write_audit_log()` that assumes
+the shared `audit_log` table already exists (created by
+`database/initialize_config_db.py`, same assumption
+`PLCConnectionManager` already makes). The settings row seeds with the
+same disabled/alarm/60-minute defaults V2.2 shipped in settings.ini -
+existence of this table never silently opts anyone in.
+
+`is_valid_email()` - deliberately simple, practical validation (an
+`@`-and-a-dot regex, not full RFC 5322) - rejects the obviously
+malformed without pretending to be a complete email grammar.
+`add_recipient()` validates format and rejects a case-insensitive
+duplicate; `update_settings()` validates `min_severity` against the
+known two values and rejects a non-positive cooldown - both raise
+`ValueError` with a specific reason rather than silently clamping or
+ignoring bad input.
+
+### 3. `app/notification_worker.py` rewired, not replaced
+
+`run_cycle()` gained a `settings_manager: NotificationSettingsManager`
+parameter and now reads `enabled`/`min_severity`/`cooldown_minutes`/
+recipients from it instead of `ConfigManager`; `config: ConfigManager`
+is still passed through unchanged for `smtp_host`/`port`/`use_tls`/
+`from_address` only. Every other line of notification logic -
+`select_notifiable_events()`, `should_notify()`,
+`format_notification_email()`, `send_email()`, the cursor-rollback
+retry-on-failure behavior, `notification_log`'s cooldown tracking - is
+completely untouched. `NotificationSettingsManager.get_settings()`
+does a fresh SQL read every call (unlike `ConfigManager`, which parses
+`settings.ini` once at construction), so admin changes apply on the
+worker's very next cycle - no restart, a genuine improvement over most
+other admin-configurable settings in this app.
+
+Existing V2.2 tests in `tests/test_alarm_notifications.py` updated for
+the new `run_cycle()` signature - `RunCycleTests` now exercises a real
+`NotificationSettingsManager` against a temp `config.db` (not a mock),
+so these tests also directly prove the new manager is wired correctly,
+not just that the old mock-based plumbing still compiles.
+
+### 4. New: `ui/pages/23_Alarm_Notification_Settings.py`
+
+Admin-only (`auth.require_role("admin")`, same gate as PLC
+Connectivity/User Management). Two sections: **Behavior** (enable
+toggle, min-severity selectbox, cooldown number input, one "Save"
+button) and **Recipients** (add-by-email form with inline validation-
+error display, a row-selectable table to remove one, matching PLC
+Connectivity's exact dataframe-selection pattern). An audit-log
+expander at the bottom, reusing `ConfigurationManager.get_audit_log()`
+- the same mechanism PLC Connectivity's own audit expander uses.
+**Never imports `os.getenv` or reads any `ConfigManager.smtp_*`
+property** - enforced by a source-level test, not just a design
+intention.
+
+### 5. Testability approach - same reasoning as Phase V1.3's login lockout
+
+A full authenticated `AppTest` click-through wasn't attempted: this
+page performs real writes, and its `@st.cache_resource`-wrapped
+manager is process-wide (not per-session), risking either touching
+real `config.db` data or cross-contaminating between test methods in
+the same pytest process. Instead: `NotificationSettingsManager`'s
+actual behavior is fully covered by direct, isolated unit tests
+against a temp database, and the page itself is covered by an
+unauthenticated `AppTest` smoke check (confirms the admin gate blocks
+cleanly, no exception) plus static source checks (admin-role gate
+present, no credential reads).
+
+### Tests
+
+35 new tests in `tests/test_notification_settings_manager.py`, all
+passing: email validation (valid/invalid/whitespace/None), settings
+defaults on a fresh database, update validation (bad severity, zero/
+negative cooldown, a rejected update leaves prior values untouched),
+audit logging for both settings updates and recipient add/remove,
+recipient add/list/remove including case-insensitive duplicate
+rejection, and the page-level checks described above. Plus one
+existing test in `tests/test_alarm_notifications.py` updated (the
+`run_cycle()` signature change) and one new one added there
+(`test_no_recipients_configured_is_not_notifiable_as_a_send_failure`,
+exercising `send_email()`'s own "no recipients configured" guard for
+real rather than mocked, for the specific case of an admin enabling
+notifications before adding anyone).
+
+One test bug caught and fixed during this phase: an early version of
+`test_page_source_never_references_smtp_credentials` failed against
+the page's own honest docstring, which explains what's excluded by
+*naming* `SMTP_PASSWORD`/`smtp_host` in prose - the test was checking
+for the wrong thing (word presence) instead of the right one (actual
+credential reads/widgets). Rewritten to check for `os.getenv` calls,
+`ConfigManager.smtp_*` reads, and password-type input widgets instead.
+
+### Files changed
+
+New: `config/notification_settings_manager.py`,
+`ui/pages/23_Alarm_Notification_Settings.py`,
+`tests/test_notification_settings_manager.py`. Changed:
+`app/notification_worker.py` (settings source rewired, signature
+change), `tests/test_alarm_notifications.py` (updated for the new
+signature, one test added), `engine/alarm_notification_engine.py`
+(email footer text points at the new page instead of settings.ini),
+`config/config_manager.py` (docstrings only - properties kept, marked
+superseded), `config/settings.ini` (comment only - marks the four
+superseded keys), `docs/ALARM_NOTIFICATIONS_SETUP.md`, `CLAUDE.md`,
+`README.md`. **No changes** to `event_monitor.py`, any alarm/anomaly
+calculation, `ai/notification_log.py`'s cooldown logic, or
+`engine/alarm_notification_engine.py`'s actual send/format logic
+beyond that one footer string.
+
+### PHASE STATUS: PASS
+
+---
