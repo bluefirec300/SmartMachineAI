@@ -118,7 +118,11 @@ def _build_dataframe(entries: list[ServiceHealth]) -> tuple[pd.DataFrame, list[s
                 "Service": service.label,
                 "State": STATE_LABELS[state_key],
                 "Uptime": uptime,
-                "Restarts": service.restart_count if service.restart_count is not None else "Unavailable",
+                # str, not int - this column mixes real counts with "Unavailable"
+                # for not-installed/unreachable services (e.g. a worker whose
+                # systemd unit hasn't been deployed yet), and pandas/Arrow
+                # cannot serialize a column mixing int and str.
+                "Restarts": str(service.restart_count) if service.restart_count is not None else "Unavailable",
                 "Last activity": last_activity,
                 "What that means": service.activity_label,
                 "Recent errors (log scan)": (

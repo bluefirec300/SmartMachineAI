@@ -60,8 +60,11 @@ back to the plain deterministic text instead).
   distinct, deliberately-separate deterministic scores: mechanical
   condition, performance-vs-own-history, and telemetry trustworthiness.
 - **System Health** - a fourth, separate kind of health: is
-  SmartFactoryAI's own software (all 13 systemd services) running
+  SmartFactoryAI's own software (all 14 systemd services) running
   correctly, with no terminal access required.
+- **Alarm Notifications** - optional email alerts for alarms (off by
+  default), with cooldown-based duplicate protection so a continuing
+  alarm doesn't spam - see `docs/ALARM_NOTIFICATIONS_SETUP.md`.
 - **Service & Maintenance, Setpoints, Documentation, Factory/Equipment/
   Tag Configuration, User Management, PLC Connectivity** - the
   day-to-day admin and engineering surface.
@@ -107,13 +110,15 @@ streamlit run ui/Home.py --server.headless true --server.port 8501
 ```
 
 In a real deployment, `plc_logger`, `event_monitor`, `streamlit`, the
-9 background `*_worker` services, and `production_simulator` all run
-continuously under systemd (`deploy/systemd/*.service` for the 9
+10 background `*_worker` services (including `notification_worker`,
+Phase V2.2 - off by default, see
+`docs/ALARM_NOTIFICATIONS_SETUP.md`), and `production_simulator` all
+run continuously under systemd (`deploy/systemd/*.service` for the 10
 workers, plus `plc_logger.service`, `event_monitor.service`,
 `streamlit.service`, and `production_simulator.service` - not yet
 moved into `deploy/`). All are `Restart=always` and need a manual
 restart after any code change - see `CLAUDE.md`'s "Background services
-(systemd)" section for the full restart commands covering all 13.
+(systemd)" section for the full restart commands covering all 14.
 
 Ask AI can also be run standalone from the CLI: `python -m app.ask`.
 
@@ -143,3 +148,6 @@ each phase's schema.
 - `docs/REAL_PLC_CUTOVER_PROCEDURE.md` - the step-by-step, safety-first
   procedure for connecting the very first real PLC/equipment, from
   connection details needed through testing loss/recovery behaviour.
+- `docs/ALARM_NOTIFICATIONS_SETUP.md` - configuring email alerts for
+  alarms (off by default) - non-secret settings, SMTP credentials via
+  environment variable, and the manual systemd steps to enable it.

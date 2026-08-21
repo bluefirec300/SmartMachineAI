@@ -278,7 +278,7 @@ class SystemHealthPageRendersTests(unittest.TestCase):
         core_df = at.dataframe[0].value
         worker_df = at.dataframe[1].value
         self.assertEqual(len(core_df), 3)
-        self.assertEqual(len(worker_df), 10)
+        self.assertEqual(len(worker_df), 11)
 
 
 if __name__ == "__main__":

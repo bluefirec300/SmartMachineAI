@@ -182,6 +182,14 @@ SERVICES: list[dict[str, Any]] = [
         "activity_source": ("config", "production_batches", "created_at"),
         "activity_label": "Most recent batch started (only advances when a NEW batch begins, not on in-progress updates - a long gap does not by itself mean the worker stopped)",
     },
+    {
+        "unit": "notification_worker.service",
+        "label": "Alarm Notification Worker",
+        "category": WORKER,
+        "tick_interval_seconds": 30.0,
+        "activity_source": ("machine", "notification_log", "last_notified_at"),
+        "activity_label": "Most recent email notification actually sent - a long silence is normal and expected whenever notifications are disabled, or simply no qualifying alarm has occurred",
+    },
 ]
 
 

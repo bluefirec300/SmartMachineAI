@@ -101,6 +101,57 @@ class ConfigManager:
         return int(gigabytes * (1000 ** 3))
 
     @property
+    def notifications_enabled(self) -> bool:
+        """
+        Same "must never be silently switched on" reasoning as
+        historian_backup_enabled above - fallback is deliberately
+        False. Enabling email alarm notifications is always an
+        explicit, intentional edit to settings.ini.
+        """
+        return self.config.getboolean(
+            "NOTIFICATIONS", "enabled", fallback=False
+        )
+
+    @property
+    def notification_min_severity(self) -> str:
+        return self.config.get(
+            "NOTIFICATIONS", "min_severity", fallback="alarm"
+        ).strip().lower()
+
+    @property
+    def notification_cooldown_minutes(self) -> float:
+        return self.config.getfloat(
+            "NOTIFICATIONS", "cooldown_minutes", fallback=60.0
+        )
+
+    @property
+    def notification_recipients(self) -> list[str]:
+        raw = self.config.get("NOTIFICATIONS", "recipients", fallback="")
+        return [address.strip() for address in raw.split(",") if address.strip()]
+
+    @property
+    def notification_poll_interval_seconds(self) -> float:
+        return self.config.getfloat(
+            "NOTIFICATIONS", "poll_interval_seconds", fallback=30.0
+        )
+
+    @property
+    def smtp_host(self) -> str:
+        return self.config.get("NOTIFICATIONS", "smtp_host", fallback="").strip()
+
+    @property
+    def smtp_port(self) -> int:
+        return self.config.getint("NOTIFICATIONS", "smtp_port", fallback=587)
+
+    @property
+    def smtp_use_tls(self) -> bool:
+        return self.config.getboolean("NOTIFICATIONS", "smtp_use_tls", fallback=True)
+
+    @property
+    def smtp_from_address(self) -> str:
+        return self.config.get("NOTIFICATIONS", "smtp_from_address", fallback="").strip()
+
+    @property
     def fins_ip(self):
         return self.config["FINS"]["ip"]
 

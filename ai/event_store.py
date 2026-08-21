@@ -515,6 +515,35 @@ class EventStore:
             row["event_count"]
         )
 
+    def get_events_since_id(
+        self,
+        since_id: int,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """
+        Phase V2.2 - additive, read-only query for the notification
+        worker's polling cursor. Returns events with id > since_id,
+        oldest first (so a cursor can safely advance to the highest id
+        seen). Does not touch insert_event()/get_recent_events() or
+        their behavior.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM machine_events
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (int(since_id), int(limit)),
+            ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
     def delete_all_events(self) -> int:
         """
         Intended mainly for tests and development resets.

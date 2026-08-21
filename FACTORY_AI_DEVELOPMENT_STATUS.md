@@ -6024,3 +6024,170 @@ produce.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.2 — Alarm Notifications
+
+**Completed:** 2026-08-21
+
+### Objective
+
+Notify engineers by email when important alarms occur, instead of
+requiring the dashboard to stay open - without changing any existing
+alarm/anomaly calculation, hardcoding any credential, or letting an
+email/network failure affect event processing.
+
+### 1. Inspection - the existing pipeline already dedupes state, not time
+
+Read `app/event_monitor.py`'s `_process_results()`: it already tracks
+an in-memory `active_states` dict per tag and only inserts a new
+`machine_events` row on a genuine state TRANSITION - "Alarm is still
+active. Do not keep inserting it." So `machine_events` does NOT grow a
+row every detection cycle for a continuing alarm, as initially assumed
+from V1.6's raw event counts. The real spam risk is narrower and more
+specific: `active_states` is in-memory only, so restarting
+`event_monitor.service` while an alarm is still active causes it to be
+re-evaluated as "new" and re-inserted - meaning a naive
+notify-on-every-new-row design would email once per restart for the
+same ongoing alarm, not once per detection cycle.
+
+### 2. New, additive: `EventStore.get_events_since_id()`
+
+A plain `id`-cursor query added to `ai/event_store.py` - does not
+touch `insert_event()`/`get_recent_events()`/`count_events()` or their
+behavior at all.
+
+### 3. New: `ai/notification_log.py`
+
+Tracks `last_notified_at` per (equipment, tag, condition) in a new
+`notification_log` table (historian database, alongside
+`machine_events`). This is the actual duplicate/spam protection: a
+cooldown window (`cooldown_minutes`, default 60), not an attempt to
+perfectly detect "is this really the same occurrence" - there's no
+explicit "alarm cleared" event to key off, since `event_monitor.py`
+only ever inserts abnormal-state rows. Re-notifying after the cooldown
+expires is an UPSERT that increments `notification_count` rather than
+inserting a duplicate row.
+
+### 4. New: `engine/alarm_notification_engine.py`
+
+Pure, independently-testable logic, no worker/Streamlit coupling:
+`select_notifiable_events()` (severity-rank filter - "alarm" by
+default, "warning" optionally includes both), `should_notify()` (the
+cooldown check), `format_notification_email()` (states equipment, tag,
+severity, value, condition, and timestamp explicitly - reuses the
+event's own already-grounded `message` text rather than re-deriving a
+description), and `send_email()` (wraps `smtplib.SMTP`, returns
+`(success, error_message)` and NEVER raises - any SMTP/network
+exception is caught inside it).
+
+**Real bug caught by this phase's own tests, before it ever ran**:
+`except Exception as error: ok, error = False, str(error)` looks
+correct but raises `UnboundLocalError` the next time `error` is read -
+Python implicitly deletes an `except X as name:` binding at the end of
+its block regardless of any reassignment inside it. Fixed to
+`except Exception as exc:` before use. Documented in `CLAUDE.md`'s new
+Alarm Notifications section as a landmine worth remembering elsewhere.
+
+### 5. New: `app/notification_worker.py` + `deploy/systemd/notification_worker.service`
+
+A wholly separate systemd service from `event_monitor.service`, on
+purpose - not just a defensive try/except within one process, but a
+structural guarantee that a notification/SMTP failure can never affect
+event processing (item 8's explicit requirement), since they're
+different OS processes entirely. Each cycle: skip entirely if
+`config.notifications_enabled` is False (the common case, by design);
+otherwise pull new events since the last cursor
+(`logs/notification_last_event_id.txt`, same marker-file convention as
+`historian_maintenance_worker.py`), filter to notifiable severity,
+check cooldown per (equipment, tag, condition), send, and record.
+**Failed sends are retried, not lost**: the cursor only advances past
+a batch if every notifiable event in it sent successfully; a failure
+holds the cursor just before the earliest failed event so it's retried
+next cycle - reprocessing already-succeeded ones in the same batch is
+safe, since `notification_log`'s cooldown check makes re-notification
+idempotent.
+
+Registered in Phase V2.1's System Health page (`ui/system_health_data.py`)
+as a 14th service - a pre-existing latent bug in that page surfaced
+while testing this (a "Restarts" column mixing `int` and `"Unavailable"`
+`str` values crashed pandas/Arrow serialization for a genuinely
+not-yet-installed service); fixed by making that column always a
+string. `ui/pages/22_System_Health.py`'s own test count updated from
+10 to 11 workers accordingly.
+
+### 6. Configuration
+
+`config/settings.ini` gained a `[NOTIFICATIONS]` section (non-secret:
+`enabled`, `min_severity`, `cooldown_minutes`, `recipients`,
+`smtp_host`/`port`/`use_tls`/`from_address`, `poll_interval_seconds`) -
+`enabled` defaults to `false`, same "must never silently switch itself
+on" principle as `historian_backup_enabled`. `config/config_manager.py`
+gained matching typed properties, following its own established
+`@property` + `fallback=` convention exactly.
+
+**Secrets never touch settings.ini**: `SMTP_USERNAME`/`SMTP_PASSWORD`
+are read via `os.getenv()` only, matching the existing
+`OPENAI_API_KEY` convention in `ai/providers/openai_provider.py`. The
+new systemd unit points at an optional `.env` file
+(`EnvironmentFile=-/home/test/SmartMachineAI/.env`, already covered by
+the project's existing `.gitignore` entry) - full setup in the new
+`docs/ALARM_NOTIFICATIONS_SETUP.md`.
+
+### Tests
+
+44 new tests in `tests/test_alarm_notifications.py`, all passing:
+severity-rank filtering (including an unrecognized severity never
+being silently dropped), cooldown boundary behavior, email content
+(every required field present, a missing value shown as "Unavailable"
+not blank/zero), `send_email()` against a fully mocked `smtplib.SMTP`
+(success, no-TLS, missing config, and a raised connection exception -
+no real email is ever sent by these tests), `notification_log`
+round-trips and case-insensitive condition matching,
+`get_events_since_id()` cursor behavior, config parsing (including
+against the real shipped `settings.ini`, confirming it ships
+disabled), and `run_cycle()` integration tests covering the
+disabled-by-default no-op, cooldown suppression on a simulated
+service-restart re-detection, cooldown expiry re-notifying, a
+non-notifiable severity still safely advancing the cursor, and the
+send-failure-retries-next-cycle behavior. One genuine test bug was
+found and fixed during this phase too: an early version of the
+`_insert_alarm()` test helper reused an identical `event_time` across
+calls, which `machine_events`' own `UNIQUE(event_time, tag, severity,
+condition)` constraint silently no-op'd - masking exactly the
+cooldown behavior the tests existed to prove. `ui/pages/
+22_System_Health.py`'s existing test count updated for the new 14th
+service.
+
+### Files changed
+
+New: `ai/notification_log.py`, `engine/alarm_notification_engine.py`,
+`app/notification_worker.py`, `deploy/systemd/notification_worker.service`,
+`docs/ALARM_NOTIFICATIONS_SETUP.md`, `tests/test_alarm_notifications.py`.
+Changed: `ai/event_store.py` (additive `get_events_since_id()` only),
+`config/config_manager.py` (additive `[NOTIFICATIONS]` properties
+only), `config/settings.ini` (`[NOTIFICATIONS]` section, disabled),
+`ui/system_health_data.py` (new 14th service entry),
+`ui/pages/22_System_Health.py` (Restarts column type fix),
+`tests/test_system_health_data.py` (worker count 10 → 11), `CLAUDE.md`,
+`README.md`. **No changes** to `app/event_monitor.py`, any rule/
+anomaly/alarm calculation, or Ask AI.
+
+### Manual setup required (cannot be done from this session - no sudo)
+
+1. Edit `config/settings.ini`'s `[NOTIFICATIONS]` section - set
+   `enabled = true`, `recipients`, and the `smtp_*` fields.
+2. Create `/home/test/SmartMachineAI/.env` with `SMTP_USERNAME`/
+   `SMTP_PASSWORD` (never commit this file - already `.gitignore`d).
+3. `sudo cp deploy/systemd/notification_worker.service
+   /etc/systemd/system/ && sudo systemctl daemon-reload && sudo
+   systemctl enable --now notification_worker.service`
+4. Verify via `systemctl status notification_worker.service` or the
+   System Health page.
+
+Full walkthrough, including a standalone SMTP test snippet that sends
+one real test email without needing a live alarm: `docs/
+ALARM_NOTIFICATIONS_SETUP.md`.
+
+### PHASE STATUS: PASS
+
+---

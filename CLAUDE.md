@@ -300,12 +300,13 @@ above; not backfilled here, out of scope for this phase.)
 
 ## System Health (`ui/system_health_data.py`, `ui/pages/22_System_Health.py`)
 
-Phase V2.1. Answers "is the SmartFactoryAI software itself running
-correctly" for an engineer with no terminal/SSH access - all 13
-systemd services (3 core: `plc_logger`, `event_monitor`, `streamlit`;
-9 `*_worker` services; `production_simulator`), each showing running/
-stopped state, uptime, restart count, last known activity, and a soft
-recent-error scan.
+Phase V2.1 (service list extended in V2.2). Answers "is the
+SmartFactoryAI software itself running correctly" for an engineer with
+no terminal/SSH access - all 14 systemd services (3 core: `plc_logger`,
+`event_monitor`, `streamlit`; 10 `*_worker` services including Phase
+V2.2's `notification_worker`; `production_simulator`), each showing
+running/stopped state, uptime, restart count, last known activity, and
+a soft recent-error scan.
 
 - **No sudo required**: every call is a read-only `systemctl show`/
   `journalctl -u` query - confirmed these need no elevated privilege
@@ -330,6 +331,55 @@ recent-error scan.
   failure for those; the page's "What that means" column says so per
   service rather than implying a uniform per-tick heartbeat that
   doesn't actually exist.
+
+## Alarm Notifications (`app/notification_worker.py`, `engine/alarm_notification_engine.py`, `ai/notification_log.py`)
+
+Phase V2.2. Off by default (`config/settings.ini`'s `[NOTIFICATIONS]`
+`enabled`, same "must be an explicit edit" principle as historian
+backup) - see `docs/ALARM_NOTIFICATIONS_SETUP.md` for full setup.
+
+- **A wholly separate systemd service, on purpose.** Runs independent
+  of `event_monitor.service` (which still does exactly what it always
+  did - writes `machine_events` on a state transition, nothing more).
+  A notification worker crash, hang, or SMTP timeout can structurally
+  never affect event storage, since they're different OS processes -
+  not just a defensive try/except within one process.
+- **Polls `machine_events` via `EventStore.get_events_since_id()`**
+  (a new, additive, read-only method - id cursor stored in
+  `logs/notification_last_event_id.txt`, the same marker-file
+  convention as `historian_maintenance_worker.py`), never a new hook
+  into `event_monitor.py`'s insert path.
+- **Duplicate/spam protection is cooldown-based, not just relying on
+  event_monitor's own state-transition dedup.** `event_monitor.py`
+  already only inserts a new row on a genuine state transition (an
+  in-memory `active_states` dict) - but that memory resets on a
+  service restart, so a still-active alarm gets re-inserted as if
+  "new" after any restart. `ai/notification_log.py` tracks
+  `last_notified_at` per (equipment, tag, condition) so a second
+  notification for the same ongoing alarm is suppressed until
+  `cooldown_minutes` (default 60) has elapsed - deliberately a time
+  window, not an attempt to perfectly detect "is this truly the same
+  occurrence," since there's no explicit "alarm cleared" event to key
+  off (`event_monitor.py` only ever inserts abnormal-state rows).
+- **A failed send is retried, not lost.** `run_cycle()` only advances
+  its cursor past a batch of events if every notifiable one in it sent
+  successfully; if any failed, the cursor holds just before the
+  earliest failure so it's retried next cycle. Already-succeeded
+  notifications in the same batch are safe to reprocess, since
+  `notification_log`'s cooldown check makes re-notification idempotent.
+- **Secrets**: `SMTP_USERNAME`/`SMTP_PASSWORD` are read via
+  `os.getenv()` only (same convention as `OPENAI_API_KEY` in
+  `ai/providers/openai_provider.py`) - never written to
+  `config/settings.ini`. The unit file's `EnvironmentFile=-.../.env`
+  is optional (leading `-`) so the service starts fine even before
+  that file exists.
+- **Landmine to know about**: `except Exception as error: ... error =
+  str(error)` looks fine but silently raises `UnboundLocalError` on
+  the next line that reads `error` - Python implicitly deletes an
+  `except X as name:` binding at the end of its block regardless of
+  reassignment inside it. Caught by this phase's own tests before
+  shipping; `app/notification_worker.py` uses `except ... as exc:`
+  instead. Worth remembering before writing a similar pattern elsewhere.
 
 ## `app/ask.py` pipeline
 
@@ -357,7 +407,7 @@ Key design choices to preserve:
 
 ## Background services (systemd)
 
-13 services under `/etc/systemd/system/` as of Phase V1.6, all
+14 services under `/etc/systemd/system/` as of Phase V2.2, all
 `Restart=always`, all need a manual restart to pick up any code change
 (each imports its Python modules once at process start). Verify the
 live count/health with `systemctl list-units --all | grep -iE
@@ -377,16 +427,17 @@ sudo systemctl restart plc_logger.service event_monitor.service streamlit.servic
 - `streamlit.service` - `streamlit run ui/Home.py --server.headless true
   --server.port 8501`, same `WorkingDirectory`.
 
-**Nine `*_worker.service` background engines, git-tracked**
+**Ten `*_worker.service` background engines, git-tracked**
 (`deploy/systemd/*.service`, one per deterministic engine - anomaly,
 asset_performance, baseline, data_health_history, energy_kpi,
 equipment_health, historian_maintenance, opportunity,
-savings_verification):
+savings_verification, notification (Phase V2.2, off by default - see
+"Alarm Notifications" below)):
 ```bash
 sudo systemctl restart anomaly_worker.service asset_performance_worker.service \
   baseline_worker.service data_health_history_worker.service energy_kpi_worker.service \
   equipment_health_worker.service historian_maintenance_worker.service \
-  opportunity_worker.service savings_verification_worker.service
+  opportunity_worker.service savings_verification_worker.service notification_worker.service
 ```
 
 **One more, not git-tracked, not yet moved under `deploy/`:**

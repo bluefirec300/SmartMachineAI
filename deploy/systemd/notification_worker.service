@@ -1,0 +1,21 @@
+[Unit]
+Description=SmartMachineAI Alarm Notification Worker
+After=network.target
+
+[Service]
+Type=simple
+User=test
+WorkingDirectory=/home/test/SmartMachineAI
+Environment=PYTHONUNBUFFERED=1
+# Optional (leading "-" means systemd won't fail to start if this file
+# doesn't exist yet) - holds SMTP_USERNAME/SMTP_PASSWORD only. Never
+# commit this file; config/settings.ini's [NOTIFICATIONS] section
+# holds every non-secret setting instead. See
+# docs/ALARM_NOTIFICATIONS_SETUP.md.
+EnvironmentFile=-/home/test/SmartMachineAI/.env
+ExecStart=/home/test/SmartMachineAI/venv/bin/python -m app.notification_worker
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
