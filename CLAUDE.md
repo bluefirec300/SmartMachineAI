@@ -457,6 +457,22 @@ ask.py`, or the grounding/fallback architecture.
   develop this app). Check current pricing at anthropic.com/pricing
   before running anything at volume; `DEFAULT_MAX_TOKENS = 2048` in
   `claude_provider.py` bounds the output side per call.
+- **Also selectable from the Ask AI page's UI** - a second radio,
+  "AI provider" (Ollama/Claude), added alongside Fast/Thorough. Still
+  never touches `settings.ini`'s default: the page passes
+  `provider_name` straight through to `AskEngine`/`AIProvider` for
+  THIS session only. Requires the user's own `ANTHROPIC_API_KEY`
+  already exported in the environment `streamlit.service` runs under -
+  the UI never asks for or accepts a key itself, consistent with "keep
+  credentials out of the UI" (the same rule already applied to SMTP
+  credentials on the Alarm Notification Settings page). Selecting
+  Claude without a working key doesn't error the page - `AskEngine.
+  ai_provider` is simply `None` and every question falls back to the
+  existing deterministic-only path (the pre-existing "no AI provider ->
+  never a crash" guarantee) - the page just also shows a `st.warning`
+  explaining why, so the missing key isn't silently confusing. See
+  "Ask AI Fast/Thorough mode" below for `AskEngine.set_provider()`,
+  the analogous method to `set_model_override()` this reuses.
 
 ## Ask AI Fast/Thorough mode (`ui/pages/1_Ask_AI.py`, `app/ask.py`'s `AskEngine.set_model_override()`, `ai/providers/provider_factory.py`'s `model_override`)
 
@@ -505,6 +521,13 @@ grounding architecture at all.
   questions, both modes) - don't estimate a speedup ratio without
   checking there first, CPU contention from the other always-running
   services measurably affects both modes' absolute timings run to run.
+- **`AskEngine.set_provider()`** ((testing) follow-up, added alongside
+  the Claude provider) - the analogous method to `set_model_override()`
+  above, same in-place-rebuild contract (`self._provider_name` tracked
+  so a later `set_model_override()` call - i.e. toggling Fast/Thorough
+  - never silently reverts the provider back to Ollama). Backs the Ask
+  AI page's new "AI provider" radio - see "Claude provider (testing
+  only)" above for the full picture.
 
 ## Alarm Notifications (`app/notification_worker.py`, `engine/alarm_notification_engine.py`, `ai/notification_log.py`, `config/notification_settings_manager.py`, `ui/pages/23_Alarm_Notification_Settings.py`)
 

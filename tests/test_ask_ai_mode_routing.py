@@ -119,6 +119,62 @@ class AskEngineModeRoutingTests(unittest.TestCase):
         self.assertIs(engine.database, database_before)
 
 
+class AskEngineProviderSelectionTests(unittest.TestCase):
+    """(testing) - AskEngine.set_provider(), added alongside the
+    Claude provider so the Ask AI page can switch providers, not just
+    models within Ollama. Same in-place-rebuild contract as
+    set_model_override() above - only self.ai_provider/self.ai_error
+    change."""
+
+    def test_constructing_with_provider_name_none_is_unchanged_default_behavior(self):
+        default_engine = AskEngine()
+        explicit_engine = AskEngine(provider_name=None)
+        self.assertEqual(default_engine.ai_provider.provider, explicit_engine.ai_provider.provider)
+
+    def test_set_provider_switches_to_claude(self):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake-key-for-routing-test-only"}):
+            engine = AskEngine()
+            engine.set_provider("claude")
+        self.assertIsNotNone(engine.ai_provider)
+        self.assertEqual(engine.ai_provider.provider, "claude (testing)")
+
+    def test_set_provider_preserves_pending_and_history(self):
+        engine = AskEngine()
+        engine._pending = {"kind": "candidate_selection", "candidates": ["a", "b"]}
+        engine._history = ["a prior question"]
+
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake-key-for-routing-test-only"}):
+            engine.set_provider("claude")
+
+        self.assertEqual(engine._pending, {"kind": "candidate_selection", "candidates": ["a", "b"]})
+        self.assertEqual(engine._history, ["a prior question"])
+
+    def test_set_provider_back_to_ollama_restores_it(self):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake-key-for-routing-test-only"}):
+            engine = AskEngine()
+            engine.set_provider("claude")
+        engine.set_provider("ollama", model_override=FAST_MODEL)
+        self.assertEqual(engine.ai_provider.provider, "ollama")
+        self.assertEqual(engine.ai_provider.model, FAST_MODEL)
+
+    def test_missing_anthropic_key_sets_ai_error_not_a_crash(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            engine = AskEngine()
+            engine.set_provider("claude")
+        self.assertIsNone(engine.ai_provider)
+        self.assertIn("ANTHROPIC_API_KEY", engine.ai_error)
+
+    def test_set_model_override_after_set_provider_stays_on_claude(self):
+        # set_model_override() must remember the provider set_provider()
+        # switched to - it should never silently fall back to Ollama's
+        # default provider just because a mode toggle fired afterward.
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake-key-for-routing-test-only"}):
+            engine = AskEngine()
+            engine.set_provider("claude")
+            engine.set_model_override(FAST_MODEL)  # ignored for Claude, but must not change provider
+        self.assertEqual(engine.ai_provider.provider, "claude (testing)")
+
+
 class AskResultModelFieldTests(unittest.TestCase):
     def test_model_defaults_to_none(self):
         result = AskResult(answer="x", intent="discovery")

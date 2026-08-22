@@ -727,6 +727,7 @@ class AskEngine:
         config_database_path: str | Path = CONFIG_DATABASE_PATH,
         machine_database_path: str | Path = MACHINE_DATABASE_PATH,
         model_override: str | None = None,
+        provider_name: str | None = None,
     ) -> None:
         self.config_database_path = Path(config_database_path)
 
@@ -750,7 +751,8 @@ class AskEngine:
             database_path=machine_database_path,
         )
 
-        self.ai_provider, self.ai_error = self._load_ai_provider(model_override)
+        self._provider_name = provider_name
+        self.ai_provider, self.ai_error = self._load_ai_provider(model_override, provider_name)
 
         # General pending-action state for the current conversation.
         # Today this only holds a "select one of these candidates"
@@ -779,9 +781,12 @@ class AskEngine:
         self._history: list[str] = []
 
     @staticmethod
-    def _load_ai_provider(model_override: str | None = None) -> tuple[AIProvider | None, str]:
+    def _load_ai_provider(
+        model_override: str | None = None,
+        provider_name: str | None = None,
+    ) -> tuple[AIProvider | None, str]:
         try:
-            return AIProvider(model_override=model_override), ""
+            return AIProvider(provider_name=provider_name, model_override=model_override), ""
         except Exception as error:
             return None, str(error)
 
@@ -794,8 +799,32 @@ class AskEngine:
         self._history (recent-question context for follow-up
         rewriting). Switching modes mid-conversation should change
         which model answers the NEXT question, nothing else.
+
+        provider_name is left at whatever it already was (None unless
+        set_provider() below was previously called) - this method only
+        ever changes the model within the current provider.
         """
-        self.ai_provider, self.ai_error = self._load_ai_provider(model_override)
+        self.ai_provider, self.ai_error = self._load_ai_provider(
+            model_override, self._provider_name
+        )
+
+    def set_provider(
+        self,
+        provider_name: str | None,
+        model_override: str | None = None,
+    ) -> None:
+        """
+        (testing) - Ask AI provider selector. Same in-place-rebuild
+        pattern as set_model_override() above (only self.ai_provider/
+        self.ai_error change - self._pending/self._history untouched).
+        provider_name=None restores whatever settings.ini/env already
+        configure (the pre-existing default, "ollama" unless changed
+        there) - this method is purely additive, never required.
+        """
+        self._provider_name = provider_name
+        self.ai_provider, self.ai_error = self._load_ai_provider(
+            model_override, provider_name
+        )
 
     @staticmethod
     def _history_hours(intent: str) -> int:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -36,45 +37,97 @@ MODE_LABELS = {"fast": f"⚡ Fast ({FAST_MODEL})", "thorough": f"🔍 Thorough (
 MODE_MODELS = {"fast": FAST_MODEL, "thorough": THOROUGH_MODEL}
 MODE_KEYS = list(MODE_LABELS)
 
+# (testing) - display-only, mirrors ai/providers/provider_factory.py's
+# own ANTHROPIC_MODEL-env-var-else-default resolution exactly, so this
+# caption never drifts out of sync with what a Claude answer would
+# actually use. Read once at page-load time (matches every other
+# constant on this page - none of them re-read live per rerun either).
+CLAUDE_MODEL_ENV_HINT = os.getenv("ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001"
+
 if "ask_mode" not in st.session_state:
     # Thorough (the pre-existing qwen2.5:7b default) - so anyone who
     # never touches this selector sees exactly the same behavior as
     # before this phase.
     st.session_state["ask_mode"] = "thorough"
 
-selected_mode = st.radio(
-    "Response mode",
-    MODE_KEYS,
-    format_func=lambda key: MODE_LABELS[key],
-    index=MODE_KEYS.index(st.session_state["ask_mode"]),
-    horizontal=True,
-    help=(
-        "Fast uses a smaller local model for quicker answers. Thorough (the original default) uses the "
-        "larger model this app was tuned with. Both apply the identical deterministic grounding/fallback - "
-        "only phrasing speed and style differ. Switching mode only affects the NEXT question you ask."
-    ),
-)
+# (testing) - AI provider selector, added alongside the pre-existing
+# Fast/Thorough mode. Ollama (Qwen) stays the default every user who
+# never touches this gets, unchanged from before this control existed.
+# Claude requires the user's own ANTHROPIC_API_KEY (env var, never
+# entered here) and is billed per use - see CLAUDE.md's "Claude
+# provider (testing only)" section. Deliberately a SEPARATE control
+# from Response mode below, not a third mode option: model_override
+# (what Response mode sets) only ever names Ollama-specific models and
+# is silently ignored for Claude (ai/providers/provider_factory.py),
+# so the two controls interact by Response mode simply not applying
+# when Claude is selected, rather than by special-casing it here.
+PROVIDER_LABELS = {"ollama": "🦙 Ollama (production)", "claude": "✨ Claude (testing)"}
+PROVIDER_KEYS = list(PROVIDER_LABELS)
 
-if selected_mode != st.session_state["ask_mode"]:
-    st.session_state["ask_mode"] = selected_mode
+if "ask_provider" not in st.session_state:
+    st.session_state["ask_provider"] = "ollama"
+
+
+def _apply_provider_and_mode(provider: str, mode: str) -> None:
+    model_override = MODE_MODELS[mode] if provider == "ollama" else None
     if st.session_state.get("ask_engine") is not None:
-        st.session_state["ask_engine"].set_model_override(MODE_MODELS[selected_mode])
+        st.session_state["ask_engine"].set_provider(provider, model_override=model_override)
     else:
         try:
-            st.session_state["ask_engine"] = AskEngine(model_override=MODE_MODELS[selected_mode])
+            st.session_state["ask_engine"] = AskEngine(provider_name=provider, model_override=model_override)
             st.session_state["ask_engine_error"] = None
         except Exception as error:
             st.session_state["ask_engine"] = None
             st.session_state["ask_engine_error"] = str(error)
+
+
+provider_col, mode_col = st.columns([1, 2])
+
+with provider_col:
+    selected_provider = st.radio(
+        "AI provider",
+        PROVIDER_KEYS,
+        format_func=lambda key: PROVIDER_LABELS[key],
+        index=PROVIDER_KEYS.index(st.session_state["ask_provider"]),
+        help=(
+            "Ollama (Qwen) is this app's production choice - free, local, tuned for this hardware. "
+            "Claude is a (testing)-only option to try Anthropic's models against the same grounded "
+            "prompts - requires your own ANTHROPIC_API_KEY (set as an environment variable, never "
+            "entered here) and is billed per use. Switching provider only affects the NEXT question."
+        ),
+    )
+
+with mode_col:
+    if selected_provider == "ollama":
+        selected_mode = st.radio(
+            "Response mode",
+            MODE_KEYS,
+            format_func=lambda key: MODE_LABELS[key],
+            index=MODE_KEYS.index(st.session_state["ask_mode"]),
+            horizontal=True,
+            help=(
+                "Fast uses a smaller local model for quicker answers. Thorough (the original default) uses the "
+                "larger model this app was tuned with. Both apply the identical deterministic grounding/fallback - "
+                "only phrasing speed and style differ. Switching mode only affects the NEXT question you ask."
+            ),
+        )
+    else:
+        selected_mode = st.session_state["ask_mode"]
+        st.caption(
+            "Response mode doesn't apply to Claude (testing) - it uses a fixed model, currently "
+            f"`{CLAUDE_MODEL_ENV_HINT}`."
+        )
+
+if selected_provider != st.session_state["ask_provider"] or (
+    selected_provider == "ollama" and selected_mode != st.session_state["ask_mode"]
+):
+    st.session_state["ask_provider"] = selected_provider
+    st.session_state["ask_mode"] = selected_mode
+    _apply_provider_and_mode(selected_provider, selected_mode)
     st.rerun()
 
 if "ask_engine" not in st.session_state:
-    try:
-        st.session_state["ask_engine"] = AskEngine(model_override=MODE_MODELS[st.session_state["ask_mode"]])
-        st.session_state["ask_engine_error"] = None
-    except Exception as error:
-        st.session_state["ask_engine"] = None
-        st.session_state["ask_engine_error"] = str(error)
+    _apply_provider_and_mode(st.session_state["ask_provider"], st.session_state["ask_mode"])
 
 if "ask_history" not in st.session_state:
     st.session_state["ask_history"] = []
@@ -107,6 +160,15 @@ engine = st.session_state["ask_engine"]
 if engine is None:
     st.error(f"Could not start the Q&A engine: {st.session_state['ask_engine_error']}")
     st.stop()
+
+# (testing) - Claude selected but unavailable (no ANTHROPIC_API_KEY,
+# bad key, etc.) is NOT a page-breaking error - engine.ai_provider is
+# simply None and every existing question path already falls back to
+# a deterministic-only answer (see app/ask.py's own "no AI provider ->
+# deterministic text, never a crash" guarantee). This just makes that
+# state visible instead of silently answering without explanation.
+if st.session_state["ask_provider"] == "claude" and engine.ai_provider is None:
+    st.warning(f"Claude (testing) isn't available right now: {engine.ai_error}")
 
 # Phase 15 - cross-page entry point. Another page links here with
 # ?ask_equipment=<instance_key>&ask_label=<display name> - read exactly
