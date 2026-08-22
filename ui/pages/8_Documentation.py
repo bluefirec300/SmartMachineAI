@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.configuration_manager import ConfigurationManager
 from rag.document_store import delete_document, extract_pdf_pages, list_documents, store_document
 from ui import auth
-from ui.data_access import CONFIG_DATABASE_PATH, get_equipment_list
+from ui.data_access import CONFIG_DATABASE_PATH, get_equipment_list, is_synthetic_reference_manual
 
 
 MANUALS_DIR = PROJECT_ROOT / "manuals"
@@ -108,27 +108,6 @@ def _attachment_label(eq: dict) -> str:
     if count == 0:
         return f"{eq['display_name']} — no attachments"
     return f"{eq['display_name']} — {count} file{'s' if count != 1 else ''}"
-
-
-def _is_synthetic_reference_manual(doc: dict) -> bool:
-    """
-    Phase V1.3 - reference manuals (equipment_id IS NULL - shared
-    across every instance of a brand/model, never a site upload) that
-    are NOT one of the 25 genuine, sourced manufacturer PDFs. There is
-    no dedicated "is_synthetic" column - every genuinely-sourced real
-    manual's filename carries a "_REAL" suffix (see FACTORY_AI_
-    DEVELOPMENT_STATUS.md's document-lookup phase for how that
-    convention was established), so its absence on a reference manual
-    is a reliable, already-existing signal rather than a new one this
-    phase invents. Never applied to a site-uploaded document (those are
-    an engineer's own real photo/file, not a manufacturer manual, and
-    are never mistakenly flagged here).
-    """
-    if doc["equipment_id"] is not None:
-        return False
-
-    file_path = doc.get("file_path") or ""
-    return "REAL" not in Path(file_path).stem.upper()
 
 
 selected_name = st.selectbox(
@@ -282,7 +261,7 @@ else:
             view_col, download_col, delete_col,
         ) = st.columns(TABLE_WIDTHS)
 
-        is_synthetic = _is_synthetic_reference_manual(doc)
+        is_synthetic = is_synthetic_reference_manual(doc)
         title_text = label if file_exists else f"{label} (not stored locally)"
         title_col.write(f"⚠️ {title_text}" if is_synthetic else title_text)
         type_col.write((doc["file_type"] or "-").upper())

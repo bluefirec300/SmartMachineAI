@@ -470,6 +470,39 @@ be an explicit action" principle as historian backup) - see
   shipping; `app/notification_worker.py` uses `except ... as exc:`
   instead. Worth remembering before writing a similar pattern elsewhere.
 
+## New-Factory Setup Readiness (`ui/setup_readiness_data.py`, `ui/pages/24_New_Factory_Setup.py`)
+
+Phase V2.7. Turns `docs/NEW_FACTORY_SETUP_CHECKLIST.md`'s 7 items
+(+ equipment/tag configuration completeness) into a live, read-only,
+admin-only dashboard - reads existing state only, invents nothing,
+performs no writes at all (the actual editing still happens on each
+item's existing dedicated page: Factory Configuration, Documentation,
+PLC Connectivity, User Management, `config/settings.ini`).
+
+- **Reuses `engine/configuration_completeness.py`'s `calculate_
+  overall_completeness()` directly** for item 8 - an already-built,
+  already-tested engine, not reimplemented.
+- **`is_synthetic_reference_manual()` moved from `ui/pages/
+  8_Documentation.py` into `ui/data_access.py`** (Phase V1.3's own
+  logic, unchanged) so both pages apply the exact same rule instead of
+  risking two copies drifting apart - `8_Documentation.py` now imports
+  it rather than defining its own copy.
+- **The SIMULATION_TUNING item (#3) is deliberately NOT a percentage.**
+  Those values live in Python registry files, not the database, and
+  the checklist itself says real values must never be proposed without
+  site engineering knowledge - inventing a "reviewed" flag/percentage
+  for this would be fabricating a false sense of trackable progress.
+  Shown as an informational list of the 5 registry files instead.
+- **"Real PLC connection" (#5) and "backup destination" (#7) both give
+  a soft, honestly-worded hint, never a verdict** - e.g. an endpoint
+  containing `0.0.0.0`/`127.0.0.1`/`localhost` is flagged as "commonly
+  used by local test tooling, verify this is really the site PLC," not
+  asserted as fake. This page can never know what's genuinely real at
+  a site it has no information about.
+- **"User accounts" (#6) never guesses which accounts are demo/test
+  accounts** - shows the real account list (username/role/active) and
+  leaves that judgment entirely to a human, on purpose.
+
 ## `app/ask.py` pipeline
 
 ```

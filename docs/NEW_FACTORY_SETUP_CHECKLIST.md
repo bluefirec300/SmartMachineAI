@@ -7,6 +7,15 @@ labeled (never silently presented as real) - this checklist is the
 list of "go find and confirm/replace those labels" work, not a list of
 missing features.
 
+**As of Phase V2.7, this checklist also exists in-app**: the
+**New-Factory Setup Readiness** page (admin) shows live status for
+every item below (confirmed/unconfirmed counts, simulated-vs-real
+tariff, synthetic manual counts, etc.) read directly from the current
+database/config state - no more manually running the `sqlite3` queries
+below. This document remains the authoritative explanation of *why*
+each item matters and exactly what to do about it; the in-app page is
+a live dashboard on top of it, not a replacement for it.
+
 Nothing here needs a code change - every item is done through the
 existing admin UI pages. If an item is skipped, the system keeps
 working and keeps being honest about it (a `⚪ inferred (simulation)`
@@ -132,6 +141,17 @@ points somewhere with real, durable storage for the target deployment
 (not just this VM's default local `backups/` directory) before relying
 on it for disaster recovery - a local-disk-only backup doesn't protect
 against losing that disk.
+
+## 8. Equipment/tag configuration completeness
+
+**Page:** Factory Configuration / Equipment & Tag Configuration (Admin).
+
+A deterministic, weighted completeness score (`engine/configuration_
+completeness.py`) blending the factory profile, every plant, and every
+classified equipment instance - not a field count, since engineering-
+significant fields (e.g. rated power/pressure) are weighted above
+purely administrative ones. Shown on the New-Factory Setup Readiness
+page along with the highest-weight missing fields, ranked.
 
 ## What this checklist deliberately does NOT cover
 

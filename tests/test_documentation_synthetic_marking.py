@@ -3,6 +3,8 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
+from ui.data_access import is_synthetic_reference_manual
+
 """
 Phase V1.3 - the 3 remaining synthetic equipment manuals (Eaton 9395,
 Donaldson Torit, IMA filling line) are now visibly marked on the
@@ -10,6 +12,10 @@ Documentation page. Real filenames from the live database are used
 directly below rather than invented ones, since the detection logic
 depends on the actual "_REAL" filename convention already established
 by the document-lookup phase.
+
+Phase V2.7 - the detection function itself moved to ui/data_access.py
+(shared with the new New-Factory Setup Readiness page), so this now
+imports it directly instead of exec-slicing it out of the page source.
 """
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -27,22 +33,9 @@ SYNTHETIC_FILENAMES = (
 )
 
 
-def _load_detector():
-    # Importing the page module directly would execute Streamlit calls
-    # at import time (st.title(), st.set_page_config() equivalents) -
-    # exec the function definition in isolation instead, matching how
-    # a plain, Streamlit-free unit test should exercise pure logic.
-    source = Path(DOC_PAGE).read_text(encoding="utf-8")
-    start = source.index("def _is_synthetic_reference_manual")
-    end = source.index("\n\n\n", start)
-    namespace = {"Path": Path}
-    exec(source[start:end], namespace)
-    return namespace["_is_synthetic_reference_manual"]
-
-
 class TestSyntheticDetectionLogic(unittest.TestCase):
     def setUp(self):
-        self.is_synthetic = _load_detector()
+        self.is_synthetic = is_synthetic_reference_manual
 
     def test_all_three_known_synthetic_docs_are_flagged(self):
         for file_path in SYNTHETIC_FILENAMES:

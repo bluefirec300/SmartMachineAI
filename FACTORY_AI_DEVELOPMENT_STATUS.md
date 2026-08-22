@@ -6859,3 +6859,146 @@ existing CSV export behavior.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.7 — Guided New-Factory Setup
+
+**Completed:** 2026-08-22
+
+### Objective
+
+Turn `docs/NEW_FACTORY_SETUP_CHECKLIST.md`'s 7 static items (+
+equipment/tag configuration completeness) into an in-app,
+read-only readiness dashboard - reusing existing engines/tables,
+never fabricating a site value or a false sense of tracked progress.
+
+### 1. Shared logic extracted, not duplicated
+
+`is_synthetic_reference_manual()` (Phase V1.3's synthetic-manual
+detection rule) moved from `ui/pages/8_Documentation.py` into
+`ui/data_access.py`, unchanged in behavior, so the new readiness page
+and the Documentation page can never drift into two different
+definitions of "synthetic." `tests/test_documentation_synthetic_
+marking.py` updated to import the function directly instead of
+exec-slicing it out of the page source (a cleaner test now that the
+function lives somewhere importable).
+
+### 2. New: `ui/setup_readiness_data.py`
+
+One `get_*_status()` function per checklist item, each reading only
+already-existing state:
+
+- **Area/System taxonomy** - `areas`/`systems.source` column counts.
+  Live result: 0/16 areas, 0/26 systems confirmed (unchanged since
+  V1.3 - still 100% simulation-inferred).
+- **Energy tariff** - `energy_tariffs` rows still open (`expiry_date
+  IS NULL`), `is_simulated` flag. Live result: 1 factory-wide scope,
+  still simulated (MYR 0.50/kWh placeholder).
+- **Equipment engineering thresholds (SIMULATION_TUNING)** -
+  deliberately NOT a computed percentage (see below) - an
+  informational list of the 5 registry files instead.
+- **Equipment manufacturer documentation** - reuses `is_synthetic_
+  reference_manual()`. Live result: 25/28 real, 3 synthetic
+  (unchanged since V1.3).
+- **Real PLC connection** - always checks the Actual environment's
+  own `plc_connections` specifically (not whichever environment
+  happens to be active), regardless of what `active_environment.txt`
+  currently says - this item is about whether a real connection has
+  ever been configured for eventual production use. Live result: one
+  active connection ("test opc", OPC UA,
+  `opc.tcp://0.0.0.0:4840/opcua/simulator`) - correctly flagged as a
+  commonly-local test address (matches the same connection identified
+  as a local test simulator back in Phase V1.4/V1.6).
+- **User accounts** - counts + full list (username/role/active), never
+  a "this looks like a demo account" guess.
+- **Backup destination** - `ConfigManager.historian_backup_enabled` +
+  `historian_backup_destination_dir`, flagged if it resolves to this
+  project's own default local `backups/` directory. Live result:
+  enabled, still the default local path.
+- **Equipment/tag configuration completeness** - a thin wrapper around
+  `engine/configuration_completeness.py`'s already-built, already-
+  tested `calculate_overall_completeness()` - not reimplemented. Live
+  result: 12% complete, top-15 missing fields ranked by engineering
+  weight (mostly equipment rated-power/flow/pressure fields).
+
+**Deliberate design decision on item 3 (SIMULATION_TUNING)**: unlike
+every other item, this one is NOT shown as a percentage or "confirmed/
+unconfirmed" status. Those values live in Python registry files, not
+the database, and `NEW_FACTORY_SETUP_CHECKLIST.md` itself already says
+real replacement values must never be proposed without genuine site
+engineering knowledge. Inventing a new "reviewed" flag/percentage for
+this item would have fabricated a false sense of trackable progress
+for something that is fundamentally a one-time manual engineering
+review, not a database-backed workflow - so it stays informational
+only (the 5 registry files, listed), matching the explicit "do not
+invent site values, track confirmation, do not fabricate configuration"
+instruction.
+
+### 3. New: `ui/pages/24_New_Factory_Setup.py`
+
+Admin-only, read-only (no `st.form`/`st.button`/write anywhere in the
+page - verified by a source-level test, not just intent). Eight
+sections matching the checklist's own numbering, each with a status
+badge (reusing `ui/table_style.py`'s existing palette - no new visual
+language), a short explanation, and a pointer to the existing admin
+page where the actual change happens. Two soft-hint items (#5 PLC
+connection, #7 backup destination) explicitly phrase their flags as
+"worth double-checking," never as a verdict this page can't actually
+know.
+
+Since this page performs zero writes, a full authenticated `AppTest`
+render was safe to run directly (unlike the Alarm Notification
+Settings page, which writes to `config.db` and was deliberately only
+smoke-tested unauthenticated) - live-verified all 8 sections render
+correctly with real current data, not just that the page doesn't
+crash.
+
+### Tests
+
+31 new/changed tests, all passing: 28 in `tests/test_setup_readiness_
+data.py` (each status function against an isolated temp database -
+mixed/all-confirmed/all-inferred taxonomy states, open-vs-closed-out
+tariff rows, real-vs-synthetic-vs-site-uploaded documents, local-vs-
+genuine-looking PLC addresses, demo-account-guessing explicitly proven
+absent, default-vs-custom backup paths - plus one full integration
+test against the real live simulation database, and the page-level
+authenticated-render + write-free-source checks described above); 6
+existing tests in `tests/test_documentation_synthetic_marking.py`
+updated for the shared-function refactor (still passing, same
+assertions).
+
+**Full regression baseline note**: this run also hit 2 new failures
+beyond the established 3-item `test_equipment_knowledge.py` baseline -
+`tests/test_phase17_2c_comparison_interpretation.py::TestComparisonFactsContract::
+test_incompatible_performance_dimensions_not_compared_numerically` and
+`tests/test_phase17_2d_comparison_compaction.py::TestCompactEnvelopeIntegration::
+test_cross_equipment_gate_preserved_in_compact_render`. Investigated
+directly, not assumed: both query `ai/context_builder.py`'s
+`build_comparison_ai_context()` against the real, continuously-running
+live simulation database and assert WSP01/CHL01 have NO comparable
+Asset Performance dimension - the live simulator has now accumulated
+enough Power_kW history on both to make them comparable, flipping the
+expected result. This phase never touched `ai/context_builder.py`,
+`engine/performance_targets.py`, or any comparison/interpretation
+code - confirmed unrelated live-data drift in an unrelated subsystem,
+not a regression. Not fixed here (out of scope for this phase); worth
+a separate look at whether these two tests should seed their own
+fixture data instead of depending on the live database's evolving
+state, the same class of fragility already documented for `test_
+phase17_2a_context_history.py`'s timing flake.
+
+### Files changed
+
+New: `ui/setup_readiness_data.py`, `ui/pages/24_New_Factory_Setup.py`,
+`tests/test_setup_readiness_data.py`. Changed: `ui/data_access.py`
+(additive `is_synthetic_reference_manual()`), `ui/pages/
+8_Documentation.py` (now imports the shared function instead of
+defining its own copy - behavior unchanged), `tests/test_documentation_
+synthetic_marking.py` (import instead of exec-slice),
+`docs/NEW_FACTORY_SETUP_CHECKLIST.md` (new intro note + new item 8),
+`README.md`, `CLAUDE.md`. **No changes** to any deterministic engine's
+calculations, any existing admin page's editing behavior, or any table
+schema.
+
+### PHASE STATUS: PASS
+
+---

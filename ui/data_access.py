@@ -495,3 +495,29 @@ def get_simulator_command_log(limit: int = 20) -> list[dict[str, Any]]:
         connection.close()
 
     return [dict(row) for row in rows]
+
+
+def is_synthetic_reference_manual(doc: dict[str, Any]) -> bool:
+    """
+    Phase V1.3, extracted to a shared module in Phase V2.7 so
+    ui/pages/8_Documentation.py and ui/pages/24_New_Factory_Setup.py
+    (the New-Factory Setup Readiness page) apply the exact same rule
+    rather than risking two copies drifting apart.
+
+    Reference manuals (equipment_id IS NULL - shared across every
+    instance of a brand/model, never a site upload) that are NOT one
+    of the genuine, sourced manufacturer PDFs. There is no dedicated
+    "is_synthetic" column - every genuinely-sourced real manual's
+    filename carries a "_REAL" suffix (see FACTORY_AI_DEVELOPMENT_
+    STATUS.md's document-lookup phase for how that convention was
+    established), so its absence on a reference manual is a reliable,
+    already-existing signal rather than a new one this phase invents.
+    Never applied to a site-uploaded document (those are an engineer's
+    own real photo/file, not a manufacturer manual, and are never
+    mistakenly flagged here).
+    """
+    if doc["equipment_id"] is not None:
+        return False
+
+    file_path = doc.get("file_path") or ""
+    return "REAL" not in Path(file_path).stem.upper()

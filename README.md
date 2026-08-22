@@ -156,7 +156,9 @@ each phase's schema.
 - `docs/NEW_FACTORY_SETUP_CHECKLIST.md` - what an engineer needs to
   configure (area/system taxonomy, tariff, engineering thresholds,
   real PLC connection, user accounts) before treating a deployment as
-  production-ready.
+  production-ready. Also available live, in-app, as the **New-Factory
+  Setup Readiness** page (admin) - read-only current status for every
+  item, sourced from the real database/config state.
 - `docs/REAL_PLC_CUTOVER_PROCEDURE.md` - the step-by-step, safety-first
   procedure for connecting the very first real PLC/equipment, from
   connection details needed through testing loss/recovery behaviour.
