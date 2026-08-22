@@ -7289,3 +7289,76 @@ logic.
 ### PHASE STATUS: PASS
 
 ---
+
+## Later Optional Work — Equipment Health PDF/CSV Export
+
+**Completed:** 2026-08-22
+
+### Objective
+
+Handoff Section 11's "Later Optional Work" list included "additional
+PDF reports" beyond Phase V2.6's Event Records/Energy Dashboard. Asked
+which page(s) mattered most rather than guessing across the ~15
+un-exported pages - user picked Equipment Health specifically.
+
+### 1. `ui/pdf_export.py` generalized, not duplicated
+
+`build_pdf_report()` gained an optional `highlight_colors: dict[str,
+str] | None` param (hex strings) alongside the existing
+`highlight_column`. Equipment Health's row states
+(HEALTHY/MONITOR/ATTENTION/INVESTIGATE/Insufficient Data) don't match
+the module's original ALARM/WARNING palette, and hardcoding a second,
+unrelated vocabulary into the shared module would have broken its own
+"deliberately tiny and generic" scope (its own docstring). Instead,
+the caller now passes its own color contract; defaulting to `None`
+falls back to the original `_DEFAULT_ROW_HIGHLIGHT_COLORS` unchanged,
+so Event Records/Energy Dashboard's existing calls needed zero edits.
+Equipment Health passes `ui.health_data.BAND_BADGE_COLORS` directly -
+the same "ONE shared color contract" (its own Phase 12.4 comment) the
+page already uses for its on-screen row tinting and badges, so a given
+health state now looks the same color on screen and on paper too.
+
+### 2. `ui/pages/19_Equipment_Health.py`
+
+CSV + PDF download buttons added directly under the fleet-wide table
+(same position/pattern as Event Records), exporting exactly that
+table (already filtered/sorted) with the 7 active filters + matching-
+equipment count as the PDF's parameter header. Deliberately does NOT
+cover the per-equipment detail/drill-down section below - that's
+interactive exploration, not a tabular report, matching how Event
+Records' own PDF only ever covers its one table, not every expander
+on that page either. No row cap needed (Event Records' 200-row cap
+exists because that table can hold up to 2000 rows; Equipment
+Health's fleet table is bounded by real equipment count - 76 across
+both plants, per `config/master_tag_list.json` - so PDF generation
+cost stays trivial regardless of filters).
+
+### Tests
+
+3 new tests in `tests/test_health_ui.py`'s `TestCsvPdfExport`: both
+download buttons render (reusing the existing `HealthUITestBase`
+fixture), the PDF call site genuinely passes `BAND_BADGE_COLORS`
+(not silently falling back to the unrelated ALARM/WARNING palette,
+which would highlight nothing on this page), and a source-level check
+that the shared helpers/color contract are actually imported and used
+as described (not just present in a docstring). All existing
+`test_health_ui.py` (18) and `test_pdf_export.py`/CSV-export tests
+(44) re-run and pass unchanged - the `highlight_colors` addition is
+backward compatible.
+
+**Full regression**: compared against the established baseline (3
+pre-existing `test_equipment_knowledge.py` failures, 2 live-data-drift
+comparison-test failures from V2.7) - see git log/commit for this
+run's exact numbers.
+
+### Files changed
+
+Changed: `ui/pdf_export.py` (`highlight_colors` param, backward
+compatible), `ui/pages/19_Equipment_Health.py` (CSV/PDF download
+buttons), `tests/test_health_ui.py` (+3 tests), `README.md`. **No
+changes** to the Equipment Health scoring engine, any other export-
+capable page's behavior, or any other page's own color palette.
+
+### PHASE STATUS: PASS
+
+---

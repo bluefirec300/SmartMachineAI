@@ -32,10 +32,13 @@ _HEADER_CELL_STYLE = ParagraphStyle("HeaderCell", parent=_CELL_STYLE, textColor=
 
 # Same row-highlight convention as ui/table_style.py's on-screen palette
 # (Event Records/Anomalies) - a color means the same thing on screen and
-# on paper.
-_ROW_HIGHLIGHT_COLORS = {
-    "ALARM": colors.HexColor("#ffb3b3"),
-    "WARNING": colors.HexColor("#ffe6a3"),
+# on paper. Plain hex strings (not reportlab Color objects) so a caller
+# passing its own `highlight_colors` (Phase V2.9's PDF-reports follow-up)
+# never needs to import reportlab itself - this module is the only place
+# that knows reportlab exists.
+_DEFAULT_ROW_HIGHLIGHT_COLORS = {
+    "ALARM": "#ffb3b3",
+    "WARNING": "#ffe6a3",
 }
 
 
@@ -50,6 +53,7 @@ def build_pdf_report(
     df: pd.DataFrame,
     *,
     highlight_column: str | None = None,
+    highlight_colors: dict[str, str] | None = None,
     generated_at: str | None = None,
 ) -> bytes:
     """
@@ -57,8 +61,14 @@ def build_pdf_report(
     CSV export already uses - no recomputation) into a simple one-title,
     one-parameter-block, one-table PDF. `highlight_column`, if given,
     names a column whose value (e.g. "ALARM"/"WARNING") is looked up in
-    _ROW_HIGHLIGHT_COLORS to shade that row - purely cosmetic, mirrors
-    the on-screen severity coloring, never changes what data is shown.
+    `highlight_colors` (hex strings) to shade that row - purely
+    cosmetic, mirrors the on-screen coloring, never changes what data is
+    shown. `highlight_colors` defaults to `_DEFAULT_ROW_HIGHLIGHT_COLORS`
+    (Event Records' ALARM/WARNING palette); pass a page's own color
+    contract instead when its row states use different values/colors
+    (e.g. Equipment Health's `ui.health_data.BAND_BADGE_COLORS`) rather
+    than forcing a second, unrelated vocabulary to match this module's
+    original two keys.
     """
     buffer = io.BytesIO()
     page_size = landscape(A4) if len(df.columns) > 5 else A4
@@ -95,11 +105,13 @@ def build_pdf_report(
         ]
 
         if highlight_column is not None and highlight_column in df.columns:
-            column_index = list(df.columns).index(highlight_column)
+            active_highlight_colors = highlight_colors or _DEFAULT_ROW_HIGHLIGHT_COLORS
             for row_index, value in enumerate(df[highlight_column], start=1):
-                color = _ROW_HIGHLIGHT_COLORS.get(str(value))
-                if color is not None:
-                    style_commands.append(("BACKGROUND", (0, row_index), (-1, row_index), color))
+                hex_color = active_highlight_colors.get(str(value))
+                if hex_color is not None:
+                    style_commands.append(
+                        ("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor(hex_color))
+                    )
 
         table.setStyle(TableStyle(style_commands))
         story.append(table)

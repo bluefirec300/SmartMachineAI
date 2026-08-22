@@ -14,6 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from ui import data_health_data as dhd
 from ui import health_data as hd
 from ui import maintenance_intelligence_data as mid
+from ui.csv_export import dataframe_to_csv_bytes
+from ui.csv_export import export_filename as export_csv_filename
+from ui.pdf_export import build_pdf_report
+from ui.pdf_export import export_filename as export_pdf_filename
 
 
 st.title("Equipment Health")
@@ -160,6 +164,52 @@ st.dataframe(
         "Primary Factor": st.column_config.TextColumn("Primary Factor", width="medium"),
     },
 )
+
+# Later-optional-work item (Phase V2.9 follow-up) - CSV/PDF export of
+# the fleet-wide table above, same pattern as Event Records/Energy
+# Dashboard (Phase V2.6). Exports exactly `df` as already built/
+# filtered/sorted above - no recomputation. The per-equipment detail
+# section below is interactive drill-down, not tabular in the same
+# way, and stays out of scope for this export (matches how Event
+# Records' PDF only ever covers its own table, not every expander on
+# the page).
+report_parameters = {
+    "Plant": plant_label,
+    "Area": area,
+    "System": system,
+    "Equipment type": type_label,
+    "Health state": band_label,
+    "Confidence": confidence_label,
+    "Sort": sort_label,
+    "Matching equipment": str(len(rows)),
+}
+
+download_cols = st.columns(2)
+
+with download_cols[0]:
+    st.download_button(
+        "⬇️ Download CSV",
+        data=dataframe_to_csv_bytes(df),
+        file_name=export_csv_filename("equipment_health"),
+        mime="text/csv",
+        help="Exports exactly the rows shown above, with the current filters applied.",
+    )
+
+with download_cols[1]:
+    st.download_button(
+        "⬇️ Download PDF",
+        data=build_pdf_report(
+            "Equipment Health Report",
+            report_parameters,
+            df,
+            highlight_column="Health State",
+            highlight_colors=hd.BAND_BADGE_COLORS,
+        ),
+        file_name=export_pdf_filename("equipment_health"),
+        mime="application/pdf",
+        help="Printable report with the active filters shown at the top, row-shaded by the same "
+        "health-state colors used on screen.",
+    )
 
 st.divider()
 st.subheader("Equipment detail")

@@ -56,12 +56,13 @@ back to the plain deterministic text instead).
 - **SCADA Floor Plan** - live, flicker-free visual plant map.
 - **Energy Dashboard** - demand, energy, cost, and utility-performance
   KPIs per plant, with a P01 vs P02 comparison.
-- **CSV/PDF export** - Event Records and the Energy Dashboard's Main
-  Energy/Equipment Power Breakdown summaries can each be downloaded as
-  CSV (full filtered data) or a printable PDF report (same data, with
-  the active filters/plant/date range shown as a header block - capped
-  at 200 rows for Event Records specifically, since PDF rendering is
-  far slower than CSV; use CSV for a larger export).
+- **CSV/PDF export** - Event Records, the Energy Dashboard's Main
+  Energy/Equipment Power Breakdown summaries, and Equipment Health's
+  fleet-wide table can each be downloaded as CSV (full filtered data)
+  or a printable PDF report (same data, with the active filters shown
+  as a header block, row-shaded with each page's own on-screen color
+  contract - capped at 200 rows for Event Records specifically, since
+  PDF rendering is far slower than CSV; use CSV for a larger export).
 - **Anomaly Detection / Energy Opportunities / Savings Verification** -
   a full pipeline from "this is statistically unusual" through
   "worth investigating" to "did the fix actually work", entirely

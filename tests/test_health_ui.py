@@ -391,5 +391,47 @@ class TestExistingPagesUnaffected(unittest.TestCase):
         self.assertIn("pages/17_Energy_Opportunities.py", source)
 
 
+# ---------------------------------------------------------------------------
+# Later-optional-work follow-up (Phase V2.9) - CSV/PDF export of the
+# fleet-wide table, same pattern as Event Records/Energy Dashboard
+# (Phase V2.6).
+# ---------------------------------------------------------------------------
+
+class TestCsvPdfExport(HealthUITestBase):
+    def test_download_buttons_present_and_match_the_table(self):
+        self._seed_pump_all_clean(confidence="High")
+        self._calculate_and_persist("P01.WATER.WSP01", "water_supply_pump")
+
+        at = self._run()
+        self.assertFalse(bool(at.exception))
+
+        labels = [b.label for b in at.download_button]
+        self.assertIn("⬇️ Download CSV", labels)
+        self.assertIn("⬇️ Download PDF", labels)
+
+    def test_pdf_report_uses_the_health_band_color_contract_not_alarm_warning(self):
+        # Direct unit check of the actual call, independent of how
+        # AppTest exposes download_button internals - confirms the page
+        # asks pdf_export for ITS OWN band colors (HEALTHY/MONITOR/...)
+        # rather than silently falling back to Event Records' unrelated
+        # ALARM/WARNING palette (which would highlight nothing here).
+        import pandas as pd
+        from ui.health_data import BAND_BADGE_COLORS
+        from ui.pdf_export import build_pdf_report
+
+        df = pd.DataFrame([{"Equipment": "Pump 1", "Health State": "HEALTHY"}])
+        pdf_bytes = build_pdf_report(
+            "Equipment Health Report", {}, df,
+            highlight_column="Health State", highlight_colors=BAND_BADGE_COLORS,
+        )
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+
+    def test_csv_export_source_reuses_the_shared_helper(self):
+        source = Path("ui/pages/19_Equipment_Health.py").read_text()
+        self.assertIn("from ui.csv_export import dataframe_to_csv_bytes", source)
+        self.assertIn("from ui.pdf_export import build_pdf_report", source)
+        self.assertIn("highlight_colors=hd.BAND_BADGE_COLORS", source)
+
+
 if __name__ == "__main__":
     unittest.main()
