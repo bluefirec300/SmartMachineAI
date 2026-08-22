@@ -1,5 +1,9 @@
 requests>=2.31,<3
 openai>=1.0
+# (testing) Anthropic Claude provider - see ai/providers/claude_provider.py.
+# Not wired into any default path; settings.ini's [AI] provider stays
+# "ollama" unless explicitly switched.
+anthropic>=0.40,<1
 pypdf>=4.0
 # PDF *generation* (Phase V2.6 reporting) - distinct from pypdf above,
 # which only reads/extracts existing manufacturer-manual PDFs. Pure

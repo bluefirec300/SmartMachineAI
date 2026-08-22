@@ -26,10 +26,11 @@ operators to query directly.
 - **NLP goal:** flexible, casual natural-language questions should
   resolve correctly without a large hardcoded alias/tag list, with real
   typo tolerance (not just for equipment names).
-- **LLM backend:** switchable between OpenAI (GPT) and Ollama (Qwen) via
-  `ai/providers/provider_factory.py`. Currently `qwen2.5:7b`. Qwen is the
-  intended production choice for cost reasons; OpenAI is for dev/testing.
-  **Do not remove this switchability.**
+- **LLM backend:** switchable between OpenAI (GPT), Ollama (Qwen), and
+  Claude (Anthropic, added as a **(testing)**-only third option - see
+  below) via `ai/providers/provider_factory.py`. Currently `qwen2.5:7b`.
+  Qwen is the intended production choice for cost reasons; OpenAI/Claude
+  are for dev/testing. **Do not remove this switchability.**
 - **The person running this project** is a project engineer, not a
   professional programmer - comfortable with basic code but prefers
   step-by-step explanations and copy-paste-able commands over dense
@@ -411,6 +412,51 @@ a soft recent-error scan.
   failure for those; the page's "What that means" column says so per
   service rather than implying a uniform per-tick heartbeat that
   doesn't actually exist.
+
+## Claude provider (testing only) (`ai/providers/claude_provider.py`)
+
+A third `ai/providers/` implementation, added purely to try Claude
+against this app's own deterministic-facts-only prompts. Same
+`BaseAIProvider` interface as OpenAI/Ollama, so it drops straight into
+the existing switch with no changes to `ai/ai_provider.py`, `app/
+ask.py`, or the grounding/fallback architecture.
+
+- **Not wired into any default path.** `settings.ini`'s `[AI] provider`
+  stays `ollama`; nothing in this codebase sets it to `claude`
+  automatically. To try it: either export `AI_PROVIDER=claude` before
+  running something standalone (e.g. `python -m app.ask`), or pass
+  `provider_name="claude"` explicitly to `ProviderFactory.create()`/
+  `AIProvider()` - never edit `settings.ini`'s default for this, since
+  that would make Claude the live app's provider too.
+- **`name` returns `"claude (testing)"`**, not just `"claude"` - so
+  wherever a provider name is already surfaced (e.g. Ask AI's "AI
+  provider: ..." caption), it stays visibly marked as the experimental
+  path, not mistaken for a new production option.
+- **API key: `ANTHROPIC_API_KEY` env var only**, same convention as
+  `OPENAI_API_KEY` (never `settings.ini`, never committed). Not wired
+  into any systemd unit's `Environment=`/`EnvironmentFile=` - source it
+  manually before testing, e.g. `source ~/.anthropic_env` (a file you
+  create yourself: `echo 'export ANTHROPIC_API_KEY=sk-ant-...' >
+  ~/.anthropic_env`, matching the existing `~/.openai_env` pattern).
+- **Model resolution deliberately does NOT fall back to
+  `config.ai_model`** (the shared `[AI] model` settings.ini key) -
+  that key is really "whichever non-Ollama provider is active"'s
+  model, currently holding an OpenAI model name (see "Known issues"
+  #4) - falling back to it here would silently hand an OpenAI model
+  string to the Anthropic SDK. Resolution is `ANTHROPIC_MODEL` env var,
+  else the hardcoded default `claude-haiku-4-5-20251001` (Anthropic's
+  smallest/cheapest current model, chosen for testing cost, mirroring
+  why Fast mode defaults to the smaller Qwen model).
+- **Fast/Thorough's `model_override` is deliberately NOT applied to
+  Claude**, same reasoning as the pre-existing OpenAI exclusion - that
+  override only ever carries Ollama model names (`qwen2.5:3b`/`7b`),
+  which would be meaningless passed to the Anthropic SDK.
+- **Cost**: the Anthropic API is pay-as-you-go, billed per input/output
+  token - there is no free tier for this kind of programmatic use
+  (distinct from whatever Claude Code/claude.ai access is used to
+  develop this app). Check current pricing at anthropic.com/pricing
+  before running anything at volume; `DEFAULT_MAX_TOKENS = 2048` in
+  `claude_provider.py` bounds the output side per call.
 
 ## Ask AI Fast/Thorough mode (`ui/pages/1_Ask_AI.py`, `app/ask.py`'s `AskEngine.set_model_override()`, `ai/providers/provider_factory.py`'s `model_override`)
 

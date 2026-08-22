@@ -1,6 +1,7 @@
 import os
 
 from ai.providers.base_provider import BaseAIProvider
+from ai.providers.claude_provider import ClaudeProvider
 from ai.providers.ollama_provider import OllamaProvider
 from ai.providers.openai_provider import OpenAIProvider
 from config.config_manager import ConfigManager
@@ -117,9 +118,30 @@ class ProviderFactory:
                 model=model
             )
 
+        if selected_provider == "claude":
+            # (testing) - see ai/providers/claude_provider.py's own
+            # docstring. model_override deliberately NOT applied here,
+            # same reasoning as the OpenAI branch above: Fast/Thorough
+            # mode names Ollama-specific models (qwen2.5:3b/7b), which
+            # would be meaningless passed to the Anthropic SDK. Also
+            # deliberately NOT read from config.ai_model: that shared
+            # [AI] model key is really "whichever non-Ollama provider
+            # is active"'s model, currently set to an OpenAI model name
+            # in settings.ini - falling back to it here would silently
+            # hand an OpenAI model string to the Anthropic SDK instead.
+            # Env var or a safe hardcoded default only.
+            model = (
+                cls._environment_value("ANTHROPIC_MODEL")
+                or "claude-haiku-4-5-20251001"
+            )
+
+            return ClaudeProvider(
+                model=model
+            )
+
         raise ValueError(
             f"Unsupported AI provider: "
             f"{selected_provider}. "
             "Supported providers are "
-            "'ollama' and 'openai'."
+            "'ollama', 'openai', and 'claude'."
         )
