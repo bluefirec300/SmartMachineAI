@@ -12,11 +12,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from ai.plc_tag_read_status import PlcTagReadStatus
 from config.configuration_manager import ConfigurationManager
 from config.environment import ENVIRONMENT_LABELS, ENVIRONMENTS, get_active_environment, set_active_environment
 from config.plc_connection_manager import PROTOCOL_FIELDS, PROTOCOLS, PLCConnectionManager
 from ui import auth
-from ui.data_access import CONFIG_DATABASE_PATH, get_equipment_list
+from ui.data_access import CONFIG_DATABASE_PATH, MACHINE_DATABASE_PATH, get_equipment_list
 
 # Depth/count caps for the OPC UA "Browse" picker below - bounds how
 # long browsing a very large server's address space can take, since
@@ -540,6 +541,53 @@ if active_protocol and active_protocol != "simulator":
             st.rerun()
 elif active_protocol == "simulator":
     st.caption("The active connection is the simulator - no real addresses to map.")
+
+st.divider()
+st.subheader("Per-Tag Read Health")
+
+if stored_environment == "simulation":
+    st.caption(
+        "Not applicable in Simulation mode - the built-in simulator doesn't have "
+        "per-tag read failures the way a real PLC connection can."
+    )
+else:
+    st.caption(
+        "Which specific tags have failed a read attempt, separate from overall "
+        "Data Health (telemetry freshness) - useful for commissioning a new "
+        "connection, since this can tell a whole-connection outage apart from "
+        "one tag's address being wrong while everything else reads fine. Only "
+        "ever lists tags that have failed at least once; a tag never shown here "
+        "has never failed a read."
+    )
+
+    @st.cache_resource
+    def _get_tag_read_status() -> PlcTagReadStatus:
+        return PlcTagReadStatus(database_path=MACHINE_DATABASE_PATH)
+
+    tag_read_status = _get_tag_read_status()
+    read_status_rows = tag_read_status.get_all()
+
+    if not read_status_rows:
+        st.caption("No tag read failures recorded yet.")
+    else:
+        currently_failing = sum(1 for row in read_status_rows if row["consecutive_failures"] > 0)
+        st.caption(
+            f"{currently_failing} tag(s) currently failing, "
+            f"{len(read_status_rows) - currently_failing} recovered from a past failure."
+        )
+        read_status_df = pd.DataFrame(
+            [
+                {
+                    "Tag": row["tag_name"],
+                    "Status": "🔴 Failing" if row["consecutive_failures"] > 0 else "🟢 Recovered",
+                    "Consecutive failures": row["consecutive_failures"],
+                    "Last success": row["last_success_at"] or "-",
+                    "Last failure": row["last_failure_at"],
+                }
+                for row in read_status_rows
+            ]
+        )
+        st.dataframe(read_status_df, hide_index=True, width="stretch")
 
 st.divider()
 

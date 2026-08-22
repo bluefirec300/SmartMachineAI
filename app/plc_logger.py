@@ -1,9 +1,11 @@
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
 
+from ai.plc_tag_read_status import PlcTagReadStatus
 from config.config_manager import ConfigManager
-from config.environment import get_config_db_path
+from config.environment import get_config_db_path, get_machine_db_path
 from plc.driver_factory import create_driver, resolve_driver_name
 from plc.tag_registry import TagRegistry
 from database.database import DatabaseManager
@@ -70,6 +72,39 @@ def should_log(tag_name, value, now, cadence, last_logged_time, last_logged_valu
         return last_time is None or (now - last_time) >= interval_seconds
 
     return True
+
+
+def detect_tag_read_changes(
+    tags: list[dict],
+    values: list[dict],
+    failure_streaks: dict[str, int],
+) -> tuple[set[str], set[str]]:
+    """
+    Phase V2.8 - isolated from any driver/database (no I/O) so this is
+    directly unit-testable. `tags` is what was requested this cycle,
+    `values` is whatever driver.read_all() actually returned (every
+    driver already silently omits a failed tag rather than raising -
+    see ai/plc_tag_read_status.py's own docstring for why that's not
+    changed here). `failure_streaks` is the caller's own running
+    per-tag failure count, updated in place here so the caller doesn't
+    need a separate bookkeeping step after every call.
+
+    Returns (failed_names, recovered_names) - recovered_names is only
+    ever tags that succeeded THIS cycle AND already had a nonzero
+    streak (i.e. genuinely recovering from a prior failure), never a
+    tag that has simply always been fine.
+    """
+    requested_names = {tag["name"] for tag in tags}
+    succeeded_names = {row["name"] for row in values}
+    failed_names = requested_names - succeeded_names
+    recovered_names = {name for name in succeeded_names if failure_streaks.get(name, 0) > 0}
+
+    for name in failed_names:
+        failure_streaks[name] = failure_streaks.get(name, 0) + 1
+    for name in recovered_names:
+        failure_streaks[name] = 0
+
+    return failed_names, recovered_names
 
 
 def _reconnect(driver, driver_name: str) -> None:
@@ -144,6 +179,14 @@ def main():
 
     database = DatabaseManager()
 
+    # Phase V2.8 - per-tag read health, separate from Data Health (see
+    # ai/plc_tag_read_status.py's own docstring for why this is a
+    # distinct question from telemetry freshness). Lives in the SAME
+    # environment's machine_data.db as everything else this process
+    # already writes to - never a second, cross-environment database.
+    tag_read_status = PlcTagReadStatus(database_path=get_machine_db_path())
+    tag_failure_streaks: dict[str, int] = {}
+
     driver = create_driver()
 
     driver.connect()
@@ -176,6 +219,28 @@ def main():
             values = driver.read_all(tags)
             now = time.monotonic()
             logged_count = 0
+
+            # Phase V2.8 - which specific tags did the driver silently
+            # drop this cycle (requested but not present in the result -
+            # every driver's read_all() already catches and omits a
+            # per-tag failure rather than raising, so this is the only
+            # place that can see WHICH tag failed, without changing any
+            # driver). Only ever calls the tracker for tags with a
+            # status change (a failure, or a recovery from one) - a
+            # tag that keeps succeeding costs nothing here.
+            failed_names, recovered_names = detect_tag_read_changes(
+                tags, values, tag_failure_streaks
+            )
+
+            if failed_names or recovered_names:
+                try:
+                    tag_read_status.record_cycle(failed_names, recovered_names, datetime.now())
+                except Exception as tracking_error:
+                    # Never let this secondary bookkeeping affect the
+                    # actual read/log cycle above - the same "one bad
+                    # thing must never block the rest" principle every
+                    # other per-tag error handler here already follows.
+                    print(f"plc_tag_read_status tracking failed: {tracking_error}")
 
             for row in values:
 

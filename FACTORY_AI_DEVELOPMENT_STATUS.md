@@ -7002,3 +7002,105 @@ schema.
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.8 — Per-Tag PLC Connection Health / Commissioning
+
+**Completed:** 2026-08-22
+
+### Objective
+
+Expose specific tag read failures rather than waiting only for Data
+Health staleness. Help real PLC commissioning by distinguishing a
+tag-specific read failure from overall connection status, while
+preserving Data Health as the telemetry-quality layer and never
+mixing Simulation and Actual.
+
+### 1. New: `ai/plc_tag_read_status.py`
+
+`PlcTagReadStatus` - a self-initializing SQLite manager (same pattern
+as `ai/event_store.py`/`config/plc_connection_manager.py`), living in
+the historian DB (`machine_data.db`) of whichever environment is
+active. `record_cycle(failed_tag_names, recovered_tag_names, when)`
+upserts a failure (increments `consecutive_failures`) or marks a
+recovery (resets the streak to 0, keeps the row so failure history
+survives). Deliberately holds a row only for a tag that has failed at
+least once - a fully healthy system never writes here, so this stays
+cheap even at up to 625 tags/cycle. Deliberately does NOT store the
+per-tag error message - would require changing what each protocol
+driver's `read_all()` returns, and "don't redesign drivers that
+already work" (Phase V1.4, reaffirmed) rules that out; knowing WHICH
+tag and HOW OFTEN is already real value without the exact exception
+text.
+
+### 2. `app/plc_logger.py` - failure detection wired into the read loop
+
+`detect_tag_read_changes(tags, values, failure_streaks)` - a pure,
+database-free helper computing a set-difference between what was
+requested this cycle and what the driver actually returned (every
+driver already silently omits a failed tag from `read_all()`'s result
+rather than raising - this is the only place that can see WHICH tag
+failed, without touching any driver). Updates the caller's in-memory
+`failure_streaks` dict in place and returns `(failed_names,
+recovered_names)`. The main loop calls this once per cycle, then hands
+the result to `tag_read_status.record_cycle()` wrapped in its own
+try/except, so a tracking failure can never block the actual read/log
+cycle - the same "one bad thing must never block the rest" principle
+every other per-tag error handler in this file already follows.
+
+**Caught during testing, not shipped**: the first version of this
+refactor extracted the set-difference logic into a pure function but
+left the `failure_streaks` mutation behind in the main loop - which
+the same refactor had already deleted, so streaks were silently never
+updated after the extraction (every cycle would have looked like a
+brand-new failure, with the streak count and recovery detection both
+non-functional). Caught by writing and running `tests/test_plc_tag_
+read_status.py`'s `DetectTagReadChangesTests` before considering the
+refactor done, not by inspection - 3 of the new tests failed against
+the broken version, pointing straight at the bug. Fixed by moving the
+streak mutation into `detect_tag_read_changes()` itself.
+
+### 3. UI: `ui/pages/10_PLC_Connectivity.py`
+
+New "Per-Tag Read Health" section, Actual environment only (Simulation
+has no real per-tag read failures to show), read-only. Lists every tag
+with failure history sorted worst-streak-first, with a 🔴 Failing / 🟢
+Recovered badge, consecutive-failure count, and last success/failure
+timestamps. Zero writes added to this page.
+
+### Tests
+
+15 new tests in `tests/test_plc_tag_read_status.py`: 8 for
+`PlcTagReadStatus` against an isolated temp database (row creation,
+streak increment, recovery keeps the row, a tag that only ever
+succeeds gets no row, multi-tag independence, ordering, a second
+instance reading back the same rows), 6 for `detect_tag_read_changes()`
+in isolation (no failures, a missing tag detected as failed, a
+recovering tag detected and reported, a tag that's always succeeded
+never marked "recovered," streak incrementing across repeated calls),
+1 unauthenticated `AppTest` smoke check on the PLC Connectivity page
+(write-capable admin page, so per this project's established
+precedent only smoke-tested unauthenticated, not run as a full
+authenticated session).
+
+**Full regression**: compared against the established baseline (3
+pre-existing `test_equipment_knowledge.py` failures, plus the 2
+live-data-drift comparison-test failures first noted in Phase V2.7 -
+`test_phase17_2c_comparison_interpretation.py` and `test_phase17_2d_
+comparison_compaction.py`, unrelated to this phase, not fixed here).
+
+### Files changed
+
+New: `ai/plc_tag_read_status.py`, `tests/test_plc_tag_read_status.py`.
+Changed: `app/plc_logger.py` (imports,
+`tag_read_status`/`tag_failure_streaks` init in `main()`,
+`detect_tag_read_changes()` helper, main loop now calls it),
+`ui/pages/10_PLC_Connectivity.py` (new read-only section, new
+imports), `CLAUDE.md`, `docs/REAL_PLC_CUTOVER_PROCEDURE.md` (step 9
+now checks the new Per-Tag Read Health section during the loss/
+recovery test). **No changes** to any protocol driver, any existing
+page's editing behavior, Data Health's own logic, or any existing
+table schema (this phase adds one new table).
+
+### PHASE STATUS: PASS
+
+---

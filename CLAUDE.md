@@ -263,6 +263,51 @@ or they can silently point at two different protocols.
   `/home/test/opcua-web-simulator` (control UI :8502, OPC UA server
   :4840, endpoint `/opcua/simulator`) for testing this against a real
   server without real plant hardware.
+- **Per-tag read health** (Phase V2.8) - see the dedicated section
+  below; a narrower signal than Data Health, purpose-built for
+  commissioning.
+
+## Per-Tag PLC Read Health (`ai/plc_tag_read_status.py`, `app/plc_logger.py`'s `detect_tag_read_changes()`, `ui/pages/10_PLC_Connectivity.py`)
+
+Answers a question Data Health (`engine/data_health_engine.py`)
+structurally can't: did THIS SPECIFIC TAG's read attempt succeed or
+fail THIS cycle - as opposed to "is this tag's data fresh," which
+looks identical in the historian whether the whole PLC connection is
+down or just one tag's address is wrong. Built for real-hardware
+commissioning, where "which one tag is misconfigured" is exactly the
+question an engineer needs answered fast.
+
+- `PlcTagReadStatus` (self-initializing SQLite manager, same pattern
+  as `ai/event_store.py`/`config/plc_connection_manager.py`) - lives
+  in the historian DB (`machine_data.db`) of whichever environment is
+  active, never a second cross-environment database. Only ever holds
+  rows for tags that have failed at least once (a fully healthy system
+  writes nothing here) - `record_cycle(failed_tag_names,
+  recovered_tag_names, when)` upserts failures (increments
+  `consecutive_failures`) and marks recoveries (resets the streak to
+  0 but keeps the row, so failure history survives a recovery).
+- **Deliberately does not store the per-tag error message** - that
+  would require changing what each driver's `read_all()` returns
+  (currently: silently omits a failed tag, printing the reason rather
+  than returning it), and "don't redesign drivers that already work"
+  (Phase V1.4, reaffirmed here) rules that out. Knowing WHICH tag and
+  HOW OFTEN is already real commissioning value without the exact
+  exception text.
+- `app/plc_logger.py`'s `detect_tag_read_changes(tags, values,
+  failure_streaks)` - a pure, DB-free helper (unit-testable without a
+  real driver/database) computing failed/recovered tag names via a
+  set-difference between what was requested and what the driver
+  actually returned this cycle, and updating the caller's in-memory
+  `tag_failure_streaks` dict in place. The main read loop calls this
+  once per cycle, then hands the result to `tag_read_status
+  .record_cycle()` wrapped in its own try/except - tracking failures
+  can never block the actual read/log cycle, the same "one bad thing
+  must never block the rest" principle every other per-tag error
+  handler in this file already follows.
+- UI: a new "Per-Tag Read Health" section on the PLC Connectivity page
+  (Actual environment only - Simulation has no real per-tag read
+  failures), read-only, listing every tag with failure history sorted
+  worst-streak-first with a 🔴 Failing / 🟢 Recovered badge.
 
 ## Web UI (`ui/`)
 

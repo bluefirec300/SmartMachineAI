@@ -118,9 +118,19 @@ device if it's a bench test) and confirm:
   interval has been exceeded by 5x (or after 300s for tags with no
   configured interval) - it does not keep showing the last value as if
   it were current.
+- The PLC Connectivity page's **Per-Tag Read Health** section (Phase
+  V2.8) shows that specific tag as 🔴 Failing, with a growing
+  consecutive-failure count - this is the narrower, faster signal for
+  commissioning: it tells you WHICH tag's read attempt is failing,
+  distinct from Data Health's "is this data still fresh" (which can't
+  tell a one-tag address problem apart from the whole connection being
+  down). If a tag never shows up here at all during a real fault,
+  that's worth investigating on its own.
 
 Reconnect the PLC and confirm the tag returns to a fresh/current state
-and logging resumes without a restart.
+and logging resumes without a restart - the Per-Tag Read Health
+section should show it as 🟢 Recovered (the row stays, so the failure
+history isn't lost, but `consecutive_failures` resets to 0).
 
 ## 10. Only then, expand
 
