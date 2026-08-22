@@ -152,6 +152,10 @@ general_pages = [
     st.Page("pages/19_Equipment_Health.py", title="Equipment Health", icon="🩺"),
     st.Page("pages/20_Asset_Performance.py", title="Asset Performance", icon="📈"),
     st.Page("pages/21_Data_Health.py", title="Data Health", icon="📡"),
+    # No role gate inside the page itself (read-only software status,
+    # not factory/configuration data) - visible to every role, same as
+    # the rest of this list.
+    st.Page("pages/22_System_Health.py", title="System Health", icon="🩺"),
 ]
 
 # Only meaningful when the simulator is actually driving data - hidden
@@ -186,6 +190,18 @@ if auth.has_role("admin"):
             title="Equipment & Tag Configuration",
             icon="🧩",
         ),
+        # Phase V2.9 - these three pages were already built (V2.3, V2.7,
+        # V2.9) and already gate themselves via auth.require_role("admin"),
+        # but were never actually added to this navigation dict, making
+        # them unreachable from the sidebar despite being fully working -
+        # found and fixed as part of this phase's RBAC review.
+        st.Page(
+            "pages/23_Alarm_Notification_Settings.py",
+            title="Alarm Notification Settings",
+            icon="🔔",
+        ),
+        st.Page("pages/24_New_Factory_Setup.py", title="New-Factory Setup", icon="🚀"),
+        st.Page("pages/25_Audit_Log.py", title="Audit Log", icon="📜"),
     ]
 
 auth.render_sidebar_identity()

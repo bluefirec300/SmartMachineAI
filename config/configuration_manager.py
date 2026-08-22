@@ -829,12 +829,58 @@ class ConfigurationManager:
     def get_audit_log(
         self,
         limit: int = 20,
+        entity_type: str | None = None,
+        username: str | None = None,
+        search: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> list[dict[str, Any]]:
+        """
+        Phase V2.9 - the filter params are all additive/optional, so
+        every existing call site (the per-page "Recent changes"
+        expanders, which only ever pass `limit`) keeps its original
+        unfiltered behavior unchanged. Timestamps are ISO 8601
+        (`_utc_timestamp()`), so plain string comparison for
+        start_date/end_date sorts correctly - a different, unrelated
+        format convention from the historian's `strftime(...)` rows
+        (see CLAUDE.md's "Known issues" #5), which this table has
+        never used.
+        """
         connection = self._connect()
 
         try:
+            conditions = []
+            params: list[Any] = []
+
+            if entity_type:
+                conditions.append("entity_type = ?")
+                params.append(entity_type)
+
+            if username:
+                conditions.append("username = ?")
+                params.append(username)
+
+            if search:
+                conditions.append(
+                    "(entity_name LIKE ? OR action LIKE ? OR details LIKE ?)"
+                )
+                like_pattern = f"%{search}%"
+                params.extend([like_pattern, like_pattern, like_pattern])
+
+            if start_date:
+                conditions.append("timestamp >= ?")
+                params.append(start_date)
+
+            if end_date:
+                conditions.append("timestamp <= ?")
+                params.append(f"{end_date}T23:59:59")
+
+            where_clause = (
+                f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            )
+
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     timestamp,
                     username,
@@ -845,13 +891,41 @@ class ConfigurationManager:
                     new_value,
                     details
                 FROM audit_log
+                {where_clause}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
 
             return [dict(row) for row in rows]
+
+        finally:
+            connection.close()
+
+    def get_audit_log_filter_options(self) -> dict[str, list[str]]:
+        """Distinct entity_type/username values actually present in
+        the audit log, for the search page's filter dropdowns - never
+        a hardcoded list, since entity_type has grown organically as
+        features were added over many phases."""
+        connection = self._connect()
+
+        try:
+            entity_types = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT entity_type FROM audit_log "
+                    "WHERE entity_type IS NOT NULL ORDER BY entity_type"
+                ).fetchall()
+            ]
+            usernames = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT DISTINCT username FROM audit_log ORDER BY username"
+                ).fetchall()
+            ]
+
+            return {"entity_types": entity_types, "usernames": usernames}
 
         finally:
             connection.close()

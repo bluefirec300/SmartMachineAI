@@ -227,6 +227,20 @@ Plan's live snapshot writer (`manuals/_scada_live.json`) - explicitly
 re-confirmed acceptable on the same reasoning (equipment status/power
 data, not sensitive process control, presumed internal network) rather
 than building a second, authenticated serving mechanism for one file.
+**Re-verified live in Phase V2.9** (not just re-read/assumed): direct
+HTTP requests against the running `streamlit.service` confirmed no
+directory listing (`/app/static/` and `/app/static/real/` both 404)
+and no path traversal (`../` in any form - raw, URL-encoded,
+double-encoded, backslash - gets a 400 from the underlying static
+handler; an earlier-looking "200 on a traversal attempt" during this
+same check turned out to be curl's own client-side collapsing of `../`
+segments before the request was even sent, landing on an unrelated
+in-app route that Streamlit's own frontend serves as a 200 SPA
+fallback - not a real traversal, confirmed by re-testing with
+`--path-as-is` to send the raw path). The exposure that remains is
+exactly and only the one already documented above (unauthenticated
+view of a document/snapshot given its exact URL) - conclusion
+unchanged, now independently confirmed rather than merely re-stated.
 
 **Known, accepted LLM limitation - do not keep chasing this with more/
 better documents:** end-to-end root-cause answers against real
@@ -547,6 +561,68 @@ PLC Connectivity, User Management, `config/settings.ini`).
 - **"User accounts" (#6) never guesses which accounts are demo/test
   accounts** - shows the real account list (username/role/active) and
   leaves that judgment entirely to a human, on purpose.
+
+## Security Hardening (Phase V2.9)
+
+Scoped deliberately small per this phase's own "avoid disproportionate
+enterprise features unless actual deployment requirements justify
+them" instruction - no 2FA/JWT/rate-limiting middleware added; login
+lockout already existed (Phase V1.3).
+
+- **Idle-timeout auto-logout** (`ui/auth.py`) - `IDLE_TIMEOUT_MINUTES`
+  (30, a plain constant, not a new admin-editable setting - a single
+  rarely-changed value didn't justify that machinery). `require_login()`
+  is already re-executed on every Streamlit rerun (any click/navigation
+  reruns `Home.py` from the top), so the idle check piggybacks on that
+  instead of a separate timer/thread: it compares `time.monotonic()`
+  against a `LAST_ACTIVITY_KEY` session-state timestamp updated on
+  every active call, logging out and showing a "signed out after N
+  minutes of inactivity" message once the gap exceeds the threshold.
+- **Audit-log search/export** (`ui/pages/25_Audit_Log.py`,
+  `ConfigurationManager.get_audit_log()`/`get_audit_log_filter_options()`) -
+  every existing per-page "Recent changes" expander (Setpoints, PLC
+  Connectivity, User Management, etc.) only ever showed its own
+  entity-type-filtered, hardcoded-limit slice with zero search. This
+  page searches the FULL `audit_log` table at once - entity
+  type/username/free-text/date-range filters, admin-only, read-only
+  (a CSV export button, no writes). `get_audit_log()`'s new filter
+  params are all optional/additive, so every existing call site
+  (unchanged, still just passing `limit`) keeps its original
+  unfiltered behavior.
+- **Dedicated RBAC tests** (`tests/test_role_based_access.py`) - unit
+  tests for `has_role`/`can_edit`/`require_role`/the idle-timeout logic
+  (session_state mocked directly, same pattern as
+  `tests/test_sidebar_environment_badge.py`), plus unauthenticated
+  `AppTest` smoke checks confirming every admin-only page's
+  `require_role("admin")` gate actually blocks, plus a source-level
+  "every `ui/pages/*.py` file is referenced somewhere in `Home.py`'s
+  navigation" check - this last one exists because writing it is what
+  surfaced the bug below.
+- **Found and fixed while building the RBAC tests**: System Health
+  (`22_System_Health.py`, Phase V2.1), Alarm Notification Settings
+  (`23_Alarm_Notification_Settings.py`, Phase V2.3), and New-Factory
+  Setup (`24_New_Factory_Setup.py`, Phase V2.7) were all fully built,
+  tested, and (the latter two) already role-gated internally - but
+  none had ever actually been added to `ui/Home.py`'s `pages` dict,
+  making all three silently unreachable from the sidebar for every
+  role, admin included, since the whole time they existed. Fixed by
+  adding all three (System Health to the always-visible general list,
+  matching its own no-role-gate design; the other two plus the new
+  Audit Log page to the admin-only list). `tests/test_role_based_
+  access.py`'s `NavigationReachabilityTests` now guards against this
+  exact class of regression for any future page.
+- **Static-file auth exposure - re-reviewed, conclusion unchanged**:
+  see the "Equipment metadata & document lookup (RAG)" section above -
+  live HTTP testing against the running service in this phase found no
+  path traversal and no directory listing; the only exposure is the
+  already-documented, already-accepted one (a document/snapshot is
+  viewable without login given its exact URL).
+- **Deployment-specific security review**: see this phase's
+  `FACTORY_AI_DEVELOPMENT_STATUS.md` entry for the full writeup
+  (secrets handling, SQL injection, XSS, password storage, session
+  handling) - a review, not new code; no gaps found beyond what was
+  already fixed in this phase or already documented as an accepted
+  trade-off.
 
 ## `app/ask.py` pipeline
 

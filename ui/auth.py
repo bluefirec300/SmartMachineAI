@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,15 @@ from config.environment import get_active_environment
 from config.user_manager import DEFAULT_DATABASE_PATH, UserManager
 
 SESSION_KEY = "auth_user"
+
+# Phase V2.9 - idle-timeout auto-logout. Kept as a plain constant, not
+# a new admin-editable setting (unlike e.g. notification cooldown) -
+# a single, rarely-changed value doesn't justify that machinery, per
+# the explicit "avoid disproportionate enterprise features" guidance
+# for this phase.
+LAST_ACTIVITY_KEY = "auth_last_activity_at"
+IDLE_TIMEOUT_MINUTES = 30
+_IDLE_LOGOUT_FLASH_KEY = "auth_idle_logout_flash"
 
 ROLE_LABELS = {
     "admin": "Administrator",
@@ -51,6 +61,7 @@ def can_edit(*roles_allowed_to_edit: str) -> bool:
 
 def logout() -> None:
     st.session_state.pop(SESSION_KEY, None)
+    st.session_state.pop(LAST_ACTIVITY_KEY, None)
 
 
 def _login_form() -> None:
@@ -66,6 +77,12 @@ def _login_form() -> None:
     """
     st.title("🏭 SmartFactoryAI")
     st.subheader("Sign in")
+
+    if st.session_state.pop(_IDLE_LOGOUT_FLASH_KEY, False):
+        st.info(
+            f"You were signed out after {IDLE_TIMEOUT_MINUTES} minutes of "
+            "inactivity. Sign in again to continue."
+        )
 
     with st.form("login_form"):
         username = st.text_input("Username")
@@ -125,7 +142,19 @@ def require_login() -> dict[str, Any]:
     user = current_user()
 
     if user is not None:
-        return user
+        now = time.monotonic()
+        last_activity = st.session_state.get(LAST_ACTIVITY_KEY)
+
+        if (
+            last_activity is not None
+            and now - last_activity > IDLE_TIMEOUT_MINUTES * 60
+        ):
+            logout()
+            st.session_state[_IDLE_LOGOUT_FLASH_KEY] = True
+            user = None
+        else:
+            st.session_state[LAST_ACTIVITY_KEY] = now
+            return user
 
     st.navigation([st.Page(_login_form, title="Sign In")], position="hidden").run()
     st.stop()

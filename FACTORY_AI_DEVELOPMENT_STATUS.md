@@ -7104,3 +7104,188 @@ table schema (this phase adds one new table).
 ### PHASE STATUS: PASS
 
 ---
+
+## Phase V2.9 — Security Hardening
+
+**Completed:** 2026-08-22
+
+### Objective
+
+Handoff Section 11's potential scope: session timeout/idle logout,
+audit-log search/export, dedicated RBAC tests, review static-file
+authentication exposure, deployment-specific security review -
+explicitly "avoid disproportionate enterprise features unless actual
+deployment requirements justify them." No 2FA, JWT, CSRF tokens, or
+rate-limiting middleware added; login lockout already existed
+(Phase V1.3) and was left untouched.
+
+### 1. Session idle timeout (`ui/auth.py`)
+
+`IDLE_TIMEOUT_MINUTES = 30`, a plain module constant rather than a new
+admin-editable setting (unlike e.g. notification cooldown) - a single,
+rarely-changed value didn't justify that machinery here.
+`require_login()` already re-executes on every Streamlit rerun (any
+click/navigation reruns `Home.py`, including this call, from the top),
+so the idle check piggybacks on that instead of a separate timer or
+background thread: a `LAST_ACTIVITY_KEY` session-state timestamp
+(`time.monotonic()`) is refreshed on every active call and compared on
+the next one; exceeding the threshold logs the session out and shows
+"You were signed out after 30 minutes of inactivity" on the next login
+form render.
+
+### 2. Audit-log search/export (`ui/pages/25_Audit_Log.py`, `ConfigurationManager.get_audit_log()`/`get_audit_log_filter_options()`)
+
+Every existing per-page "Recent changes" expander (Setpoints, PLC
+Connectivity, User Management, Equipment & Tag Configuration,
+Documentation, Alarm Notification Settings) only ever showed its own
+entity-type-filtered, hardcoded-limit (20-50 row) slice, with no
+search at all. `get_audit_log()` gained optional `entity_type`/
+`username`/`search`/`start_date`/`end_date` params (all additive - every
+existing call site, which only ever passes `limit`, keeps its original
+unfiltered behavior unchanged); `get_audit_log_filter_options()` is new,
+returning the real distinct entity-type/username values present (never
+a hardcoded dropdown list, since `entity_type` has grown organically
+across ~9 phases). The new page is admin-only, read-only (filters + a
+CSV download button, no writes).
+
+**Before shipping this, specifically checked whether it could newly
+expose a secret**: this page makes the full `audit_log` table far more
+visible/exportable than it was before (previously buried across
+separate hardcoded-limit lists). Traced `write_audit_log()` call sites
+for the two highest-risk cases directly - `config/user_manager.py`'s
+`create_user()`/`reset_password()` (only ever log `entity_name`=
+username and `details=f"role=..."` - never the password or its hash)
+and `config/plc_connection_manager.py`'s `create_connection()` (only
+`entity_name`=connection name and `details=f"protocol=..."` - never
+the connection's username/password fields, even though those columns
+exist on the same table). No secret is written into `audit_log` by
+either path, so nothing new is exposed by making that table searchable.
+
+### 3. Dedicated RBAC tests (`tests/test_role_based_access.py`)
+
+15 tests (12 subtests): unit tests for `has_role`/`can_edit`/
+`require_role` and all 4 idle-timeout branches (first access
+initializes the clock without logging out; active within the window
+keeps the session; idle beyond the window logs out and clears both
+session keys; no session at all never touches the clock) with
+`st`/`time` mocked directly, same pattern as `tests/test_sidebar_
+environment_badge.py`; an unauthenticated `AppTest` smoke check
+confirming all 6 admin-only pages actually block (not just that
+`require_role()` works in isolation); and a source-level check that
+every file in `ui/pages/` is referenced somewhere in `Home.py`'s
+navigation - written to guard the bug found next.
+
+### 4. Found and fixed while writing the RBAC tests: 3 unreachable pages
+
+`ui/Home.py`'s `pages` dict never included `22_System_Health.py`
+(Phase V2.1), `23_Alarm_Notification_Settings.py` (Phase V2.3), or
+`24_New_Factory_Setup.py` (Phase V2.7) - all three were fully built,
+tested, and (the latter two) already role-gated internally via
+`auth.require_role("admin")`, but none had ever actually been added to
+the navigation registration. Structurally unreachable from the sidebar
+for every role, including admin, since the day each shipped - a real,
+pre-existing gap, not something this phase's own changes introduced.
+Root cause: `st.navigation()`'s page list is an explicit dict a
+developer must remember to update per new page file; nothing fails
+loudly when a page is left out. Fixed by adding all three (System
+Health to the always-visible general list, matching its own
+no-internal-role-gate design; the other two, plus the new Audit Log
+page, to the admin-only list). `NavigationReachabilityTests` in the
+new test file now fails loudly if this recurs for any future page.
+
+### 5. Static-file auth exposure - re-reviewed with live testing, conclusion unchanged
+
+Sent real HTTP requests against the actually-running `streamlit.service`
+(not just re-reading the existing code/doc) targeting `ui/static ->
+../manuals`: `/app/static/` and `/app/static/real/` both 404 (no
+directory listing); `../` traversal in raw, URL-encoded,
+double-URL-encoded, and backslash forms all get a 400 from the
+underlying static handler. One false alarm caught and corrected during
+this check: an initial plain-curl request to a `../../config/
+settings.ini`-style URL returned 200 - turned out to be curl's own
+client-side collapsing of `../` segments before the request was even
+sent (landing on an unrelated in-app route that Streamlit's frontend
+serves as a 200 SPA fallback for any unmatched path), not a real
+traversal - re-confirmed as a non-issue by re-testing with
+`--path-as-is` to send the literal, uncollapsed path, which correctly
+got 400. The exposure that remains is exactly and only the one already
+documented (a document/snapshot is viewable without login given its
+exact URL) - independently re-confirmed, not merely re-stated.
+
+### 6. Deployment-specific security review
+
+- **Secrets handling**: `OPENAI_API_KEY`/`SMTP_USERNAME`/
+  `SMTP_PASSWORD` are `os.getenv()`-only (never `settings.ini` or a
+  committed file) - already true before this phase, re-confirmed.
+  `grep`-swept the whole codebase for hardcoded secret-shaped literals;
+  found one genuine item (below), nothing else.
+- **SQL injection**: every f-string-built query in the codebase (6
+  sites found via a repo-wide sweep of `execute(f"..."` patterns) was
+  traced to its actual identifier source - all 6 interpolate a table/
+  column name from either a hardcoded literal/tuple or a value already
+  filtered against a hardcoded whitelist before use (e.g.
+  `ui/production_data.py`'s `update_product()` intersects incoming
+  field names against a fixed `editable` set before building
+  `SET ... = ?` clauses), never a raw, unfiltered user-supplied string.
+  Every actual VALUE (as opposed to identifier) in every query found
+  during this sweep, including this phase's own new `get_audit_log()`
+  filters, uses a parameterized `?` placeholder.
+- **XSS**: stored XSS in the SCADA Floor Plan's live tag/equipment
+  data was already found and fixed pre-V2.9 (`eab0592`, HTML-escape
+  before `innerHTML`) - re-confirmed still in place, not re-litigated.
+- **Password storage**: PBKDF2-HMAC-SHA256 + random salt
+  (`config/user_manager.py`), already true before this phase.
+  Timing-safe comparison (`secrets.compare_digest`) on login, already
+  true. Account lockout after repeated failed attempts, already true
+  (Phase V1.3).
+- **Genuine finding, not fixed in this phase (scope decision)**:
+  `engine/seed_users.py` seeds all demo/placeholder accounts with the
+  hardcoded password `"123456"`, and there is currently no *self-
+  service* "change my own password" control anywhere in the UI - only
+  an admin can change a user's password, via User Management's
+  "Reset password" dialog. For the Simulation environment's demo
+  accounts this is a non-issue (there's nothing real to protect); for
+  a real Actual-environment deployment, every account's password needs
+  a genuine one set by an admin before go-live - already effectively
+  covered by the fact that an admin must create/reset each Actual
+  account's password directly (there's no seed script path for Actual
+  data), but no in-app control currently *prompts* for this the way
+  e.g. New-Factory Setup Readiness prompts for the other checklist
+  items. Not built here - a self-service password-change control is a
+  reasonable small future addition, but wasn't in this phase's
+  explicit scope and would have been scope creep to add unprompted.
+  Noted here so it isn't silently lost.
+- **Session handling**: `.streamlit/config.toml`'s
+  `disconnectedSessionTTL = 0` (Phase V1.x) already forces a fresh
+  login on any reconnect/refresh, not just on explicit logout - already
+  true, now complemented by this phase's idle-timeout for a session
+  that stays connected but goes unused.
+
+### Tests
+
+27 new tests total: 15 in `tests/test_role_based_access.py` (12
+subtests), 12 in `tests/test_audit_log_search.py` (`get_audit_log()`'s
+new filters against an isolated temp database, plus unauthenticated +
+authenticated `AppTest` checks on the new page - zero-write page, so a
+full authenticated session was safe, same reasoning as Phase V2.7's
+New-Factory Setup page).
+
+**Full regression**: see git log/commit for the run captured alongside
+this phase's commit; compared against the established baseline (3
+pre-existing `test_equipment_knowledge.py` failures, 2 live-data-drift
+comparison-test failures noted in Phase V2.7, neither touched here).
+
+### Files changed
+
+New: `ui/pages/25_Audit_Log.py`, `tests/test_role_based_access.py`,
+`tests/test_audit_log_search.py`. Changed: `ui/auth.py` (idle timeout),
+`config/configuration_manager.py` (`get_audit_log()` filters,
+`get_audit_log_filter_options()`), `ui/Home.py` (added the 3
+previously-unreachable pages plus the new Audit Log page to
+navigation), `CLAUDE.md`. **No changes** to any deterministic engine,
+any existing page's editing behavior, password hashing, or lockout
+logic.
+
+### PHASE STATUS: PASS
+
+---
