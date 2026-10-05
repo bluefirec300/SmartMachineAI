@@ -408,6 +408,32 @@ STOPWORDS = {
     # one first_match() happened to pick first.
     "compare","comparison","compared","versus","vs","against",
     "today","yesterday",
+    # Same recurring bug class as the connector-word batch above, found
+    # while wiring "every"/"overall" into the equipment_status broad-
+    # match branches: "every" (not previously in the vocabulary at all)
+    # scored a high enough ratio against "ever" (already a stopword,
+    # one character away) to get silently rewritten - "every equipment
+    # in P01" was becoming "ever equipment in p01" before the intent
+    # classifier ever saw it, so the "every" in discovery_words the
+    # equipment_status branches check for was never actually there.
+    # "overall" added defensively alongside it for the same reason
+    # (never checked in practice, but the exact same length/shape risk).
+    "every","overall",
+    # "equipment"/"plant" are the other half of the same "every
+    # equipment in P01 plant" phrasing - both were surviving into
+    # equipment_terms as literal (non-typo) generic filler words (no
+    # real equipment name contains either - confirmed against
+    # config.db), so the tag-ranking step was scoring them against
+    # real tag/equipment names as if they were meaningful search terms
+    # and confidently "resolving" to one arbitrary equipment (Main
+    # Incomer) instead of falling through to the intended plant-wide
+    # status summary. "equipment" is already treated as pure generic
+    # vocabulary for the *discovery* intent (see DISCOVERY_TARGETS
+    # above) - this extends the same treatment to equipment_terms
+    # stripping. extract_plant() only strips the matched "p01"/"plant
+    # 2" fragment itself, not a bare trailing "plant" with no digit
+    # attached, so this is still needed even with that already in place.
+    "equipment","equipments","plant",
 }
 
 DISCOVERY_TARGETS = {
@@ -768,7 +794,22 @@ class ConceptExtractor:
             # framing words, so it's untouched and stays current_data).
             or (
                 event_type
-                and discovery_words & {"any", "anything", "equipment", "everything"}
+                and discovery_words & {"any", "anything", "equipment", "everything", "all", "every"}
+            )
+            # "what is having alarm or warning now"/"what's showing a
+            # fault" - same broad live-status framing as the block
+            # above, phrased as "is/are having/showing" instead of
+            # "any"/"anything". Still gated on event_type for the same
+            # reason: without an alarm/fault/warning word, "is having"
+            # is too generic a phrase to safely claim on its own (found
+            # live - the earlier "any"/"all"/"every" word-set alone
+            # didn't cover this phrasing).
+            or (
+                event_type
+                and any(
+                    contains(text, p)
+                    for p in ("is having", "are having", "is showing", "are showing")
+                )
             )
         ):
             # A broad "how's it doing" / "is everything ok" question -
@@ -777,7 +818,9 @@ class ConceptExtractor:
             # with no equipment named either, whole-factory) status
             # summary. See app/ask.py's "equipment_status" handling.
             intent = "equipment_status"
-        elif measurement == "status" and discovery_words & {"all", "every", "overall"}:
+        elif (
+            measurement == "status" or "equipment" in discovery_words
+        ) and discovery_words & {"all", "every", "overall"}:
             # "show me all compressor status"/"what is the status of
             # all compressors" - "status" alone matched MEASUREMENTS
             # (a real per-tag concept, e.g. RunStatus/LoadStatus),

@@ -27,6 +27,7 @@ from ai.rule_engine import RuleEngine, format_rule_results
 from ai.trend_analyzer import analyse_tag, format_number
 from config.environment import get_config_db_path, get_machine_db_path
 from database.database import DatabaseManager
+from engine.concept_extractor import extract_comparison_periods
 from engine.industrial_query_engine import IndustrialQueryEngine
 from rag.retrieval import search_chunks
 
@@ -144,6 +145,26 @@ EQUIPMENT_STATUS_SCORE_FLOOR = 0.4
 # see the comment on self._history in __init__.
 HISTORY_TURNS_KEPT = 5
 
+# Explicit "that's not what I wanted, ask the real AI" follow-up
+# phrases - see AskEngine._maybe_escalate_to_llm(). Deliberately a
+# short, literal-substring list (same conservative approach as
+# _correct_word()'s guard lists) rather than a broad keyword match, so
+# a genuine new question that happens to mention "AI"/"claude"/"ollama"
+# in passing isn't misread as a rejection of the previous answer.
+ESCALATION_PHRASES = (
+    "not what i want",
+    "not what i meant",
+    "none of these",
+    "none of those",
+    "thats not it",
+    "that's not it",
+    "ask the ai",
+    "ask ai directly",
+    "use the ai directly",
+    "ask claude",
+    "ask ollama",
+)
+
 TIME_RANGE_LABELS = {
     "yesterday": "yesterday",
     "today": "today",
@@ -221,20 +242,24 @@ def _factory_timeline_range(time_expression):
     return start.strftime(TIMESTAMP_FORMAT), end.strftime(TIMESTAMP_FORMAT), label
 
 
-def _format_factory_wide_events(events, label):
+def _format_factory_wide_events(events, label, plant: str | None = None):
     """
-    Render a factory-wide (not tag-specific) event summary.
+    Render a factory-wide (not tag-specific) event summary - or, when
+    `plant` is given, one scoped to that plant only.
 
     Used when a timeline question doesn't name a specific tag/
     equipment ("is there anything happen yesterday") - the normal
     tag resolver has nothing to resolve to, so this queries
-    machine_events across everything instead of failing outright.
+    machine_events across everything (or one plant) instead of
+    failing outright.
     """
+    scope = f"in {plant.upper()} " if plant else ""
+
     if not events:
-        return f"No alarm or warning events were recorded {label}."
+        return f"No alarm or warning events were recorded {scope}{label}."
 
     lines = [
-        f"Alarm/warning events {label} "
+        f"Alarm/warning events {scope}{label} "
         f"({len(events)} shown, most recent first):"
     ]
 
@@ -412,10 +437,11 @@ def _format_equipment_status(equipment_display_name, statuses):
     return "\n".join(lines)
 
 
-def _format_factory_status(statuses):
+def _format_factory_status(statuses, plant: str | None = None):
     """
-    Render a deterministic, no-LLM factory-wide status summary - used
-    when an "equipment_status" question doesn't name a specific
+    Render a deterministic, no-LLM status summary - factory-wide by
+    default, or scoped to one plant when `plant` is given (e.g. "p01")
+    - used when an "equipment_status" question doesn't name a specific
     instance confidently enough (see EQUIPMENT_STATUS_SCORE_FLOOR in
     ask()), mirroring the factory-wide timeline fallback above.
     """
@@ -424,15 +450,19 @@ def _format_factory_status(statuses):
     alarms = [s for s in evaluated if s["severity"] == "alarm"]
     warnings = [s for s in evaluated if s["severity"] == "warning"]
 
+    scope = plant.upper() if plant else "the factory"
+
     if not alarms and not warnings:
         return (
-            f"Everything looks normal across the factory - all "
+            f"Everything looks normal across {scope} - all "
             f"{len(evaluated)} monitored reading(s) with a configured "
             "threshold are within limits."
         )
 
+    header_scope = plant.upper() if plant else "Factory-wide"
+
     lines = [
-        f"Factory-wide status - {len(alarms)} in alarm, "
+        f"{header_scope} status - {len(alarms)} in alarm, "
         f"{len(warnings)} in warning (out of {len(evaluated)} monitored "
         "reading(s) with a configured threshold):",
         "",
@@ -780,6 +810,24 @@ class AskEngine:
         # it's built or trimmed.
         self._history: list[str] = []
 
+        # What the previous ask() call actually answered with, so a
+        # follow-up like "that's not what I wanted" can redo the same
+        # turn through the LLM instead of just being treated as a
+        # brand new question. "kind" is one of:
+        #   "menu"     - an ambiguity menu was shown; "candidates" holds
+        #                the exact list offered, so an escalation can
+        #                only ever synthesize across tags the user
+        #                already saw, never a new/invented one.
+        #   "instant"  - a deterministic answer that skipped the LLM
+        #                per INSTANT_ANSWERS_SKIP_LLM (equipment_status/
+        #                discovery/chitchat/factory-wide timeline);
+        #                "deterministic_text" is the exact same text
+        #                _phrase_with_llm() would otherwise just rephrase.
+        #   "llm_answer" - the last answer already came from the LLM;
+        #                nothing to escalate.
+        # None until the first ask() call completes.
+        self._last_turn: dict | None = None
+
     @staticmethod
     def _load_ai_provider(
         model_override: str | None = None,
@@ -913,7 +961,7 @@ class AskEngine:
 
         return row[0], row[1]
 
-    def _status_tag_rows(self, equipment_name: str | None):
+    def _status_tag_rows(self, equipment_name: str | None, plant: str | None = None):
         connection = sqlite3.connect(self.config_database_path)
         connection.row_factory = sqlite3.Row
 
@@ -925,8 +973,10 @@ class AskEngine:
                     FROM tags
                     JOIN equipment AS e ON e.id = tags.equipment_id
                     WHERE tags.enabled = 1
+                        AND (? IS NULL OR e.name LIKE ? || '\\_%' ESCAPE '\\')
                     ORDER BY e.display_name, tags.tag_name
-                    """
+                    """,
+                    (plant, plant),
                 ).fetchall()
 
             return connection.execute(
@@ -942,17 +992,21 @@ class AskEngine:
         finally:
             connection.close()
 
-    def _evaluate_status(self, equipment_name: str | None) -> list[dict]:
+    def _evaluate_status(
+        self, equipment_name: str | None, plant: str | None = None
+    ) -> list[dict]:
         """
         Build one evaluated status dict per enabled tag (optionally
-        scoped to one equipment instance), reusing RuleEngine exactly
-        the same way _answer_for_tag() does for individual tags -
-        just against the single latest reading per tag
-        (DatabaseManager.get_latest_all(), one query total) rather
-        than a full history window, since a status check only needs
-        "is this currently fine", not a trend.
+        scoped to one equipment instance, or - when equipment_name is
+        None - to one plant), reusing RuleEngine exactly the same way
+        _answer_for_tag() does for individual tags - just against the
+        single latest reading per tag (DatabaseManager.get_latest_all(),
+        one query total) rather than a full history window, since a
+        status check only needs "is this currently fine", not a trend.
+        plant is ignored when equipment_name is given - a resolved
+        equipment instance already implies its own plant.
         """
-        rows = self._status_tag_rows(equipment_name)
+        rows = self._status_tag_rows(equipment_name, plant if equipment_name is None else None)
         latest = self.database.get_latest_all()
 
         statuses = []
@@ -977,7 +1031,9 @@ class AskEngine:
 
         return statuses
 
-    def _phrase_with_llm(self, question: str, deterministic_text: str) -> str:
+    def _phrase_with_llm(
+        self, question: str, deterministic_text: str, force: bool = False
+    ) -> str:
         """
         Optionally re-phrase an already-correct, deterministic answer
         through the LLM instead of returning it verbatim - see
@@ -987,8 +1043,23 @@ class AskEngine:
         phrasing raw sensor data could - if it fails or is
         unavailable, the verbatim deterministic text is still a
         correct answer on its own.
+
+        force=True bypasses only the INSTANT_ANSWERS_SKIP_LLM check
+        (never the "no provider available" one) - used by
+        _maybe_escalate_to_llm() when the user explicitly asked for
+        the AI's phrasing on a turn that would otherwise have skipped
+        it. Not recorded into self._last_turn, so the original
+        question/answer this was escalating stays the thing a further
+        escalation attempt would redo.
         """
-        if INSTANT_ANSWERS_SKIP_LLM or self.ai_provider is None:
+        if not force:
+            self._last_turn = {
+                "kind": "instant",
+                "question": question,
+                "deterministic_text": deterministic_text,
+            }
+
+        if (INSTANT_ANSWERS_SKIP_LLM and not force) or self.ai_provider is None:
             return deterministic_text
 
         prompt = (
@@ -1007,16 +1078,17 @@ class AskEngine:
         except Exception:
             return deterministic_text
 
-    def _factory_wide_timeline(self, time_expression: str) -> str:
+    def _factory_wide_timeline(self, time_expression: str, plant: str | None = None) -> str:
         start, end, label = _factory_timeline_range(time_expression)
 
         events = self.event_store.get_recent_events(
             limit=FACTORY_WIDE_EVENTS_LIMIT,
             start_time=start,
             end_time=end,
+            tag_prefix=f"{plant.upper()}." if plant else None,
         )
 
-        return _format_factory_wide_events(events, label)
+        return _format_factory_wide_events(events, label, plant=plant)
 
     def _answer_factory_water_consumption(self, question: str) -> str:
         """
@@ -1033,6 +1105,7 @@ class AskEngine:
         that same reset-safe accumulation helper instead of duplicating
         the logic here.
         """
+        self._last_turn = {"kind": "llm_answer"}
         from ui.scada_floor_plan_data import _todays_accumulated_total
 
         today_m3 = _todays_accumulated_total(self.database, FACTORY_WATER_METER_TAG)
@@ -1072,6 +1145,8 @@ class AskEngine:
         intent: str,
         question: str,
     ) -> str:
+        self._last_turn = {"kind": "llm_answer"}
+
         history = self.database.get_history(
             tag=tag_name,
             hours=self._history_hours(intent),
@@ -1217,6 +1292,8 @@ class AskEngine:
         with an honest "I don't have that data" instead of guessing
         when either period has no historian data at all.
         """
+        self._last_turn = {"kind": "llm_answer"}
+
         start_a, end_a, label_a = _factory_timeline_range(period_a)
         start_b, end_b, label_b = _factory_timeline_range(period_b)
 
@@ -1344,15 +1421,22 @@ class AskEngine:
                     ),
                 )
 
+            plant = result.concepts.plant or None
             return self._phrase_with_llm(
-                question, _format_factory_status(self._evaluate_status(None))
+                question,
+                _format_factory_status(
+                    self._evaluate_status(None, plant=plant), plant=plant
+                ),
             )
 
         if result.intent == "timeline" and (
             result.status != "resolved" or not result.selected_tag
         ):
             return self._phrase_with_llm(
-                question, self._factory_wide_timeline(result.time_expression)
+                question,
+                self._factory_wide_timeline(
+                    result.time_expression, plant=result.concepts.plant or None
+                ),
             )
 
         if (
@@ -1853,6 +1937,46 @@ class AskEngine:
     def _answer_comparison_interpretation(
         self, question: str, on_progress: Callable[[str], None] | None = None,
     ) -> AskResult:
+        """
+        classify_interpretation_intent() routes ANY question containing
+        a bare "compare"/"vs"/"versus" trigger word here, regardless of
+        whether it's actually naming two DIFFERENT pieces of equipment
+        ("compare AC01 vs AC02") or ONE piece of equipment across two
+        TIME PERIODS ("compare today's pressure to 3 days ago") - the
+        classifier only phrase-matches, it has no concept of periods.
+        resolve_equipment_pair() below is built only for the former
+        shape (found live: "how does P01 compressed air header
+        pressure today compare to 3 days ago" produced two unrelated
+        "which equipment did you mean" menus, because it was trying to
+        find a SECOND equipment in text that only ever named one).
+
+        extract_comparison_periods() only returns two non-empty
+        periods when a real comparison trigger word AND two distinct
+        time expressions are both present - a precise enough signal to
+        safely hand a genuine period comparison to the existing,
+        already-correct single-equipment/two-period pipeline (the
+        legacy ask() -> _answer_comparison(), which computes both
+        periods' real values deterministically and never lets the LLM
+        recompute the verdict) instead of the equipment-pair one below.
+        A question naming no time period at all ("compare AC01 vs
+        AC02") is unaffected and still reaches resolve_equipment_pair()
+        exactly as before.
+        """
+        period_a, _, period_b, _ = extract_comparison_periods(question)
+
+        if period_a and period_b:
+            answer = self.ask(question)
+            return AskResult(
+                answer=answer,
+                intent="",
+                resolved_entities=[],
+                structured_context=None,
+                provider=self.ai_provider.provider if self.ai_provider is not None else None,
+                model=self.ai_provider.model if self.ai_provider is not None else None,
+                grounding_status="not_applicable",
+                fallback_used=self.ai_provider is None,
+            )
+
         pair = self.query_engine.resolve_equipment_pair(question)
 
         if pair.status != "resolved":
@@ -1955,9 +2079,124 @@ class AskEngine:
 
         return self._answer_equipment_interpretation(question, intent, context_equipment, on_progress=on_progress)
 
+    def _maybe_escalate_to_llm(self, stripped_question: str) -> str | None:
+        """
+        Detect an explicit "that's not what I wanted, ask the real AI"
+        follow-up (ESCALATION_PHRASES) and redo the previous turn
+        through the LLM instead of matching it as a brand new
+        question. Returns None (meaning: not an escalation, continue
+        normal question handling) whenever there's no prior turn to
+        escalate or the text doesn't contain one of the explicit
+        phrases.
+
+        The LLM is still only ever handed facts already computed
+        deterministically (the same candidate list or the same
+        deterministic answer text already shown) - escalating can't
+        introduce an invented tag or value any more than the normal
+        answer paths can.
+        """
+        normalized = stripped_question.lower()
+
+        if not self._last_turn or not any(
+            phrase in normalized for phrase in ESCALATION_PHRASES
+        ):
+            return None
+
+        last_turn = self._last_turn
+
+        if self.ai_provider is None:
+            return (
+                "AI phrasing is unavailable "
+                f"({self.ai_error}) - there's no AI provider configured "
+                "to escalate to right now."
+            )
+
+        if last_turn["kind"] == "llm_answer":
+            return (
+                "That answer was already generated by the AI - "
+                "there's nothing further to escalate."
+            )
+
+        if last_turn["kind"] == "instant":
+            return self._phrase_with_llm(
+                last_turn["question"], last_turn["deterministic_text"], force=True
+            )
+
+        if last_turn["kind"] == "menu":
+            return self._answer_menu_escalation(
+                last_turn["question"], last_turn["candidates"], last_turn["intent"]
+            )
+
+        return None
+
+    def _answer_menu_escalation(self, question: str, candidates: list, intent: str) -> str:
+        """
+        "None of these" follow-up to an ambiguity menu - ask the LLM to
+        synthesize/compare across the SAME candidate tags already
+        offered, using each one's real current data, rather than
+        re-running the deterministic matcher (which already failed to
+        pick one) or letting the LLM answer free-form. Mirrors
+        _answer_for_tag()'s single-tag prompt assembly, just across
+        the whole candidate list at once.
+        """
+        self._last_turn = {"kind": "llm_answer"}
+
+        summaries = []
+        rule_results = []
+
+        for candidate in candidates:
+            tag = candidate.tag
+            history = self.database.get_history(
+                tag=tag.tag_name,
+                hours=self._history_hours(intent),
+                limit=DEFAULT_HISTORY_LIMIT,
+            )
+
+            if not history:
+                continue
+
+            summary = analyse_tag(tag.tag_name, history)
+            summaries.append(summary)
+            rule_results.append(self.rule_engine.evaluate_summary(summary))
+
+        if not summaries:
+            return (
+                "None of the tags from that menu have any historian "
+                "data recorded yet, so there's nothing for the AI to "
+                "work from either."
+            )
+
+        machine_context = format_machine_context(summaries, intent or "current_data")
+        rule_context = format_rule_results(rule_results, include_normal=True)
+
+        route = {
+            "equipment": "one of several possible matches",
+            "intent": intent or "current_data",
+        }
+
+        prompt = build_prompt(
+            question=question,
+            machine_context=machine_context,
+            rule_context=rule_context,
+            route=route,
+        )
+
+        if self.ai_provider is None:
+            return self._deterministic_answer(machine_context, rule_context, self.ai_error)
+
+        try:
+            return self.ai_provider.generate(prompt)
+        except Exception as error:
+            return self._deterministic_answer(machine_context, rule_context, str(error))
+
     def ask(self, question: str) -> str:
         """Answer one operator question and return the final text."""
         stripped_question = question.strip()
+
+        escalation = self._maybe_escalate_to_llm(stripped_question)
+
+        if escalation is not None:
+            return escalation
 
         if self._pending and self._pending["kind"] == "select_candidate":
             if stripped_question.isdigit():
@@ -2036,6 +2275,12 @@ class AskEngine:
             "candidates": candidates,
             "intent": result.intent,
             "question": result.question,
+        }
+        self._last_turn = {
+            "kind": "menu",
+            "question": result.question,
+            "intent": result.intent,
+            "candidates": candidates,
         }
 
         lead_sentence = self._phrase_clarifying_question(question, candidates, result.status)

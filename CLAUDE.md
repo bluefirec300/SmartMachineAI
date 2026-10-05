@@ -154,10 +154,12 @@ own try/except so one bad tag can never block the rest of a cycle.
 resolve a free-text question to a tag/equipment/intent without an LLM.
 Supported intents: `current_data`, `root_cause`, `trend`, `threshold`,
 `timeline`, `discovery` ("what's available to check"), `equipment_status`
-("is everything ok", "how is AC01 doing", "show all cold room status"),
-`chitchat_greeting`/`chitchat_thanks`, `comparison` ("compare power
-today vs yesterday", or vs. any specific date), and a factory-wide
-timeline fallback for time-based questions with no equipment named.
+("is everything ok", "how is AC01 doing", "show all cold room status",
+"explain all the alarms in P01 and why", "every equipment in P01
+plant"), `chitchat_greeting`/`chitchat_thanks`, `comparison` ("compare
+power today vs yesterday", or vs. any specific date), and a
+factory-wide timeline fallback for time-based questions with no
+equipment named.
 `discovery`, `equipment_status`, the factory-wide timeline fallback,
 and chitchat all resolve instantly with no LLM call by default
 (`INSTANT_ANSWERS_SKIP_LLM = True` in `app/ask.py`; can be flipped to
@@ -187,19 +189,82 @@ code:
   + `app/ask.py`'s `_answer_comparison()` compute a real two-period
   comparison deterministically; the LLM is only allowed to restate the
   pre-computed verdict, never recompute or reverse it.
+- **Plant-scoped `equipment_status` fallback**: when no single
+  equipment resolves confidently (e.g. "explain all the alarms in P01
+  and why"), the factory-wide fallback (`app/ask.py`'s
+  `_format_factory_status(self._evaluate_status(...))`) is now scoped
+  to `result.concepts.plant` when the question named one, instead of
+  always dumping both plants - `_status_tag_rows()` reuses the same
+  `e.name LIKE ? || '\_%' ESCAPE '\'` prefix filter
+  `_list_available_equipment()` already used for `discovery`. A
+  plant-less question ("is everything ok") is unaffected and still
+  answers factory-wide. Also covers "what is having alarm/warning
+  now"/"what's showing a fault" phrasing (event_type word + "is/are
+  having/showing", not just the "any"/"all"/"every" word-set above).
+- **Plant-scoped factory-wide `timeline` fallback**: same fix, applied
+  to the OTHER deterministic no-equipment-named path
+  (`AskEngine._factory_wide_timeline()`, e.g. "any alarms or warning
+  in P01 plant"). **Landmine found doing this: `machine_events.
+  equipment` cannot be used for plant filtering** - for the legacy
+  ~20-tag demo data still sitting in old rows it's a bare category
+  string (`"factory"`/`"compressor"`/...), and even for live P01/P02
+  rows it's a display name (`"AHU AHU01 (P01)"`) with no reliable
+  prefix to filter on. `EventStore.get_recent_events()` gained a
+  `tag_prefix` param instead (`tag LIKE ? || '%'`) - every imported
+  tag name itself starts with its plant qualifier
+  (`P01.HVAC.AHU01.FanPower`), which is reliable. **Also:** this
+  project keeps *per-environment* historian databases
+  (`database/simulation/machine_data.db`, `database/actual/
+  machine_data.db` - `database/machine_data.db` on its own is stale/
+  legacy, last written 2026-08-10) - a raw `sqlite3 database/
+  machine_data.db` spot-check will silently show the wrong data, not
+  an error. Always go through `DatabaseManager`/`EventStore`'s own
+  environment resolution (or `sqlite3 database/simulation/
+  machine_data.db` explicitly) rather than assuming the bare filename.
+- **"Ask the AI directly" escalation** (`AskEngine._last_turn`,
+  `ESCALATION_PHRASES`, `_maybe_escalate_to_llm()`): after any
+  deterministic-only answer (an ambiguity menu, or an instant
+  `equipment_status`/`discovery`/`chitchat`/timeline answer that
+  skipped the LLM per `INSTANT_ANSWERS_SKIP_LLM`), a follow-up like
+  "that's not what I wanted"/"ask the AI directly" redoes the same
+  turn through Claude/Ollama instead of being matched as a brand new
+  question. Still grounded, not free-form: an ambiguity-menu
+  escalation (`_answer_menu_escalation()`) builds one combined prompt
+  from the SAME candidate tags already shown (real current
+  value + `RuleEngine` result per tag, via `analyse_tag()` +
+  `format_machine_context()`/`build_prompt()` - same building blocks
+  `_answer_for_tag()` uses for one tag, just across several at once);
+  an instant-answer escalation just re-calls `_phrase_with_llm(...,
+  force=True)`, which only ever rephrases the same deterministic text,
+  never adds facts. Live-tested against real `qwen2.5:7b`: escalating
+  a "SYS01 status" ambiguity menu produced a multi-tag answer whose
+  every value cross-checked correct against `plc_data` (one tag got a
+  slightly embellished label, no invented values). `self._last_turn`
+  is separate from `self._pending`/`self._history` and records which
+  of `"menu"`/`"instant"`/`"llm_answer"` the previous turn was, so
+  escalation knows what (if anything) there is to redo. With no AI
+  provider configured, it degrades to a plain "AI phrasing is
+  unavailable" message, same guarantee as everywhere else - never a
+  crash.
 
 **Standing landmine - typo-correction false positives:** `_correct_word()`
 (edit-distance-1-gated `SequenceMatcher` fuzzy correction) has
 repeatedly mis-corrected short, legitimately-spelled real words into
 an unrelated vocabulary term ("or"->"orp", "no"->"now", "mill"->"fill",
-spelled-out numbers like "two"->"to", etc.) - each occurrence is
-protected via `STOPWORDS` (for pure connector/number words) or
-`VOCABULARY_WORDS`/`EQUIPMENT_NAME_WORDS` (for words that must still
-survive into `equipment_terms`). **If a new phrase mysteriously fails
-to match**, check `correct_spelling(question)` first - it may have
-silently mangled a word before the intent classifier ever saw it. This
-bug class has recurred five separate times; the edit-distance-1 guard
-narrowed it substantially but did not eliminate it.
+spelled-out numbers like "two"->"to", "every"->"ever", etc.) - each
+occurrence is protected via `STOPWORDS` (for pure connector/number
+words) or `VOCABULARY_WORDS`/`EQUIPMENT_NAME_WORDS` (for words that
+must still survive into `equipment_terms`). **If a new phrase
+mysteriously fails to match**, check `correct_spelling(question)`
+first - it may have silently mangled a word before the intent
+classifier ever saw it. This bug class has recurred six separate
+times (most recently "every"/"equipment"/"plant", found while wiring
+plant-scoped `equipment_status` matching above - "equipment"/"plant"
+weren't mis-corrected, but were surviving into `equipment_terms` as
+literal generic filler and getting scored against real tag names,
+which silently defeated the plant-wide fallback the same way a
+mis-correction would have); the edit-distance-1 guard narrowed it
+substantially but did not eliminate it.
 
 ## Equipment metadata & document lookup (RAG)
 
@@ -716,6 +781,26 @@ Key design choices to preserve:
 - No AI provider available -> deterministic-only text answer, never a
   crash. Don't remove this fallback.
 - Run standalone with `python -m app.ask`.
+- An explicit "ask the AI directly" follow-up
+  (`AskEngine._maybe_escalate_to_llm()`, see "NLP / query engine"
+  above) sits in front of this whole diagram - it can redo the
+  previous turn through the LLM, but only ever from facts already
+  computed by this same pipeline, never a free-form LLM call.
+
+**This diagram is the legacy `ask()` path only.** A separate, newer
+`ask_structured()` pipeline also exists
+(`ai/context_builder.py` -> `ai/interpretation_prompt_builder.py` ->
+`AIProvider.generate` -> `ai/grounding_guard.py`'s `check_grounding()`
+- the one addition this second pipeline has that the diagram above
+doesn't: a **post-hoc** check that discards the LLM's answer and
+substitutes a deterministic fallback if the answer isn't actually
+grounded in the supplied context). `equipment_status`/`discovery`/
+`chitchat`/factory-wide `timeline` all still resolve through the
+legacy path above (`ask_structured()`'s intent classifier returns
+`None` for these and falls back to calling `ask()` internally) - this
+second pipeline was found undocumented here during Phase V2.10's
+escalation-feature work; noted rather than fully written up, since
+fully documenting it is out of scope for that phase.
 
 ## Background services (systemd)
 

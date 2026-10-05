@@ -358,6 +358,7 @@ class EventStore:
         limit: int = 20,
         equipment: str | None = None,
         tag: str | None = None,
+        tag_prefix: str | None = None,
         severity: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
@@ -382,6 +383,20 @@ class EventStore:
             )
             parameters.append(
                 tag.strip()
+            )
+
+        if tag_prefix:
+            # Plant scoping - every imported P01/P02 tag name starts
+            # with its plant qualifier ("P01.HVAC.AHU01.FanPower"), so
+            # a prefix match here is equivalent to "events for this
+            # plant" without needing machine_events to carry its own
+            # plant column. Mirrors app/ask.py's equipment-name prefix
+            # filter used for the equipment_status plant scoping.
+            conditions.append(
+                "tag LIKE ? || '%'"
+            )
+            parameters.append(
+                tag_prefix.strip()
             )
 
         if severity:
