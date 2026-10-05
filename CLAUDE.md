@@ -498,11 +498,35 @@ ask.py`, or the grounding/fallback architecture.
   provider: ..." caption), it stays visibly marked as the experimental
   path, not mistaken for a new production option.
 - **API key: `ANTHROPIC_API_KEY` env var only**, same convention as
-  `OPENAI_API_KEY` (never `settings.ini`, never committed). Not wired
-  into any systemd unit's `Environment=`/`EnvironmentFile=` - source it
-  manually before testing, e.g. `source ~/.anthropic_env` (a file you
-  create yourself: `echo 'export ANTHROPIC_API_KEY=sk-ant-...' >
-  ~/.anthropic_env`, matching the existing `~/.openai_env` pattern).
+  `OPENAI_API_KEY` (never `settings.ini`, never committed). The
+  intended pattern is to source it manually before testing, e.g.
+  `source ~/.anthropic_env` (a file you create yourself:
+  `echo 'export ANTHROPIC_API_KEY=sk-ant-...' > ~/.anthropic_env`,
+  matching the existing `~/.openai_env` pattern) - **correction found
+  during the 2026-10-05 catch-up/verification pass:** `streamlit.
+  service`'s unit file (not git-tracked, lives only in `/etc/systemd/
+  system/`) was at some point given `EnvironmentFile=-/home/test/
+  .anthropic_env` directly, with a real key in that file - so the live
+  app process does in fact have a working Anthropic key available,
+  contrary to what this line previously claimed. Combined with a
+  separate uncommitted one-line demo hack found the same day
+  (`ui/pages/1_Ask_AI.py` defaulting `ask_provider` to `"claude"` -
+  already reverted, see `FACTORY_AI_DEVELOPMENT_STATUS.md`'s
+  2026-10-05 verification entry), this meant the live Ask AI page
+  was silently defaulting to Claude - a real-cost provider - with no
+  explicit user action, for as long as that uncommitted line sat
+  there. **If `streamlit.service`'s unit file still has this
+  `EnvironmentFile=` line, either remove it to restore "manual-source-
+  only" as the actual behavior, or treat it as a deliberate choice and
+  update this doc to match - don't leave the doc and the unit file
+  disagreeing again.**
+- **Planned direction (not started):** once this project moves off
+  this machine to its next development platform, the plan is to
+  revisit this provider from "testing-only, opt-in demo" towards an
+  actual real-API production option (model choice, cost controls,
+  whether it stays opt-in or becomes a real alternative to Qwen) -
+  deliberately deferred rather than designed now. Treat this note as
+  the starting point for that conversation, not a spec.
 - **Model resolution deliberately does NOT fall back to
   `config.ai_model`** (the shared `[AI] model` settings.ini key) -
   that key is really "whichever non-Ollama provider is active"'s

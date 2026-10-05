@@ -7362,3 +7362,179 @@ capable page's behavior, or any other page's own color palette.
 ### PHASE STATUS: PASS
 
 ---
+
+## 2026-10-05 — Verification & Pre-Migration Handoff
+
+**Completed:** 2026-10-05
+
+### Objective
+
+The project sat untouched for ~6 weeks (last commit 2026-08-22, this
+session 2026-10-05). Before resuming work - and because the user will
+not be returning to this particular machine, with the next phase of
+development happening on a Windows machine - this session did a full
+health check of the whole stack, fixed what it found, and produced a
+lean, portable backup of everything that can't be regenerated.
+
+### 1. What was checked
+
+- **Git repository**: `git fsck --full` - no corruption; the dangling
+  commits/trees it lists are normal leftovers from past amends/rebases
+  (confirmed via `git reflog` showing a clean, linear commit history),
+  not data loss.
+- **Databases**: `PRAGMA integrity_check` on `database/config.db`,
+  `database/simulation/machine_data.db` (3.8GB - check took ~3 min,
+  real I/O time, not a hang), and `database/actual/machine_data.db` -
+  all three `ok`.
+- **Background services**: all 13 expected systemd services
+  (3 core + 10 `*_worker` + `production_simulator`) active, 0 restarts,
+  no real errors in `journalctl` (a handful of lines matched a crude
+  `grep -i error` scan in `data_health_history_worker`/
+  `equipment_health_worker`/`savings_verification_worker`'s logs - all
+  confirmed to be the already-known healthy `cycle: {..., 'errors': 0,
+  ...}` summary-line false-positive pattern documented under "System
+  Health" above, not real errors). `notification_worker` correctly
+  inactive (off by default, as designed).
+- **Dependencies**: venv intact, every `requirements.txt` entry present
+  at a compatible installed version (version-string diffing initially
+  made this look like several packages were missing - they weren't;
+  `requirements.txt` uses range specifiers like `anthropic>=0.40,<1`
+  while `pip freeze` pins exact versions like `anthropic==0.125.0`, so
+  a literal diff flags every one of them even though all are correctly
+  satisfied - checked by package name instead to confirm).
+- **Live app**: `streamlit.service` responds HTTP 200, `/_stcore/health`
+  OK, no exceptions in recent logs.
+- **Full test suite**: `pytest tests/ -q` - 1682 passed, 30 subtests
+  passed, 6 failed. Isolated via `git stash` (re-running the failing
+  modules against a clean, fully-committed HEAD) into two groups - see
+  below.
+
+### 2. Pre-existing failures (unchanged, not touched)
+
+4 of the 6 failures reproduce identically on a clean HEAD with no
+uncommitted changes present, and match this doc's own established,
+repeatedly-reconfirmed baseline (see Phase V2.7/V2.9/Later-Optional-
+Work entries above): 3 `test_equipment_knowledge.py` alias/typo gaps
+("air system"/"comprssor" not resolving to "compressor") and 1
+`test_phase17_2a_context_history.py` token-budget assertion - this
+doc's own Phase "Second dead-code cleanup" entry already documents
+this exact one as a "known intermittent timing flake." Not fixed here,
+consistent with prior phases' explicit instruction not to.
+
+### 3. Real regression found and fixed: Ask AI silently defaulting to Claude
+
+The other 2 failures (`tests/test_ask_ai_provider_selector.py`'s
+`test_ollama_is_selected_by_default` and
+`test_response_mode_radio_is_visible_by_default`) did NOT reproduce on
+clean HEAD - isolated to one uncommitted line in `ui/pages/
+1_Ask_AI.py`:
+
+```python
+# TEMPORARY - defaulted to Claude for a demo session. NOT committed
+# (this line is deliberately left as an uncommitted local edit) -
+# revert with: git checkout -- ui/pages/1_Ask_AI.py
+st.session_state["ask_provider"] = "claude"
+```
+
+Left over from a past demo session and never reverted before the
+6-week gap. Reverted now (`git checkout -- ui/pages/1_Ask_AI.py`, this
+was the file's *only* uncommitted change, so this fully restores it);
+all 6 tests in that file pass again afterward.
+
+This was more than a test failure: `streamlit.service`'s unit file
+(not git-tracked, `/etc/systemd/system/streamlit.service` only) turned
+out to already have `EnvironmentFile=-/home/test/.anthropic_env`
+wired in, and that file holds a real, working `ANTHROPIC_API_KEY` -
+contradicting this doc's own "Claude provider (testing only)" section,
+which (before this entry) claimed the key was never wired into any
+systemd unit. With both pieces in place at once, the live Ask AI page
+was silently defaulting every question to Claude - a real-cost
+provider - with zero explicit user action, for as long as the
+uncommitted line sat there. CLAUDE.md's "Claude provider (testing
+only)" section has been corrected to reflect this, including a note
+that whoever next touches `streamlit.service`'s unit file should
+either remove that `EnvironmentFile=` line or consciously decide to
+keep it and update the doc to match - not let the two disagree again.
+**`streamlit.service` itself still needs a manual restart to pick up
+the reverted file** - not done this session (no sudo/TTY access; the
+running process still has the old, Claude-defaulting code loaded in
+memory until restarted).
+
+Per the user's explicit direction: this is reverted for now, but the
+underlying idea - giving Claude a real (non-"testing-only") place in
+this app - is intended to be revisited for real once development
+resumes on the next platform. Not scoped or designed here; see the new
+"Planned direction (not started)" note in CLAUDE.md's Claude-provider
+section.
+
+### 4. Uncommitted work already in the tree (not authored this session, found already in progress)
+
+Four files carry what looks like a complete, already-self-documented
+feature (CLAUDE.md's own working copy already describes it in detail
+under "NLP / query engine" and "`app/ask.py` pipeline" as "Phase
+V2.10"): plant-scoped `equipment_status`/timeline fallbacks, and an
+"ask the AI directly" escalation path that redoes a deterministic-only
+answer through the LLM on an explicit follow-up like "that's not what
+I wanted." Both parse cleanly and the live test suite shows no
+regression from them (the only regression found was the unrelated
+demo-hack line, see above). Gaps before calling this phase done,
+matching the pattern every other phase in this doc follows: no
+dedicated test file yet (compare `tests/test_ask_ai_mode_routing.py`
+for V2.4's equivalent), and no phase entry of its own in this file
+(this entry documents the *verification*, not the feature - a real
+V2.10 write-up, with its own test file, is still owed).
+
+Also newly committed since the V2.9 entry above (not previously
+written up in this file at all): the Claude provider addition
+(`3056472`) and the Ask AI provider-selector UI (`1b35fd2`) - both
+already covered in CLAUDE.md's own "Claude provider (testing only)"
+section, just never given a dedicated entry here. Not written up
+retroactively in this pass (out of scope for a verification session) -
+flagged here so it isn't lost track of.
+
+### 5. Backup produced
+
+Per explicit user direction: the historian databases (`database/`,
+6.0GB) and the historian backup-rotation directory (`backups/`, 20GB -
+six rolling full copies of the growing simulation database) were
+deliberately **excluded** - simulated data, fully regenerable by
+running the simulator, not worth carrying to a new machine. The
+`venv/` (581MB) was also excluded - platform-specific, trivially
+rebuilt from `requirements.txt` on the new machine instead.
+
+What WAS backed up (everything not reproducible by re-running the
+project): the full git repository (code + history, including the 2
+locally-committed-but-unpushed commits and the current uncommitted
+working-tree changes to `CLAUDE.md`/`ai/event_store.py`/`app/ask.py`/
+`engine/concept_extractor.py`), `manuals/` (96MB - 25/28 real,
+genuinely-sourced manufacturer PDFs that took real effort to find, not
+reproducible by re-running anything), `config/*.json`/`settings.ini`,
+`docs/`, `deploy/systemd/`, and this doc plus CLAUDE.md. See this
+entry's accompanying backup archive for the exact path/contents list.
+
+**Not included anywhere (by design, security)**: `ANTHROPIC_API_KEY`/
+`OPENAI_API_KEY`/SMTP credentials/the `.anthropic_env`/`.openai_env`
+files themselves - these must be re-created on the new machine, never
+carried in a backup archive.
+
+### 6. Suggested next phase, once resumed on the new machine
+
+1. Re-run `pip install -r requirements.txt` in a fresh venv; re-create
+   `~/.anthropic_env`/`~/.openai_env` if Claude/OpenAI testing is still
+   wanted.
+2. Re-run the simulator/importers to regenerate a working
+   `database/` from scratch (`engine/tag_dataset_importer.py`,
+   `engine/seed_engineering_thresholds.py`, etc. - see "Current data
+   model" in CLAUDE.md) rather than expecting old data to be present.
+3. Decide on, and restart, `streamlit.service` (or run `streamlit run
+   ui/Home.py` directly if systemd isn't being reused on the new
+   platform) so the reverted Ask AI default actually takes effect live.
+4. Finish Phase V2.10 properly: add its own test file and a real,
+   non-verification write-up in this doc (see item 4 above).
+5. Decide what to do with the Claude-provider "real API model" idea
+   now that the demo hack is gone - see CLAUDE.md's new "Planned
+   direction (not started)" note.
+
+### PHASE STATUS: VERIFIED — NOT CORRUPTED, ONE REGRESSION FOUND AND FIXED, READY FOR HANDOFF
+
+---
